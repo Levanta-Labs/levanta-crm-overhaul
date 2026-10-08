@@ -10,7 +10,7 @@
 //=============================================================================================================
 //#region <import statements>
 
-import {
+import { //attio record readers and writers
   addPersonToList,
   AttioApiError,
   createCompany,
@@ -32,9 +32,9 @@ import {
   type AttioRecord,
   type AttioValues,
 } from "./attio.js";
-import { reportConfigValue, tunableEnv } from "./env.js";
-import { arrayValue, errorMessage, isJsonObject, stringValue } from "./json.js";
-import {
+import { reportConfigValue, tunableEnv } from "./env.js"; //read and report tunable settings
+import { arrayValue, errorMessage, isJsonObject, stringValue } from "./json.js"; //safe readers for unknown json
+import { //per-provider labels and suppression channels
   attributionSlugs,
   attributionValues,
   leadSourceLabel,
@@ -59,120 +59,126 @@ import { runLogApplied, runLogRecord, withRunLog } from "./run-log.js"; //the to
 //that number was already in its address book.
 //---------------------------------------------------------------------------------------------------------
 export interface InterestedLead {
-  readonly provider: Provider;
+  readonly provider: Provider; //which platform reported the lead
   //Plural because Attio's equivalents are multiselect and providers do carry several - HeyReach alone has three
   //address fields. Order is significance, not preference: the first is what single-valued Deal attributes take.
-  readonly emails: readonly string[];
+  readonly emails: readonly string[]; //every known email, most significant first
   //E.164 already. Normalising at the edge rather than here is what lets one string both match Attio and be
   //written back to it.
-  readonly phones: readonly string[];
-  readonly firstName: string | null;
-  readonly lastName: string | null;
-  readonly linkedin: string | null;
-  readonly jobTitle: string | null;
-  readonly description: string | null;
-  readonly location: string | null;
-  readonly companyName: string | null;
-  readonly companyDomain: string | null;
+  readonly phones: readonly string[]; //every known phone number, E.164
+  readonly firstName: string | null; //lead's first name
+  readonly lastName: string | null; //lead's last name
+  readonly linkedin: string | null; //linkedin profile url
+  readonly jobTitle: string | null; //lead's job title
+  readonly description: string | null; //free-text about the lead
+  readonly location: string | null; //where the lead is, free text
+  readonly companyName: string | null; //the lead's company name
+  readonly companyDomain: string | null; //the company's web domain
   //A postal address as one string, parsed by parsePostalAddress below. Attio's location attribute is structured,
   //so an address that will not parse is dropped rather than guessed at.
-  readonly companyAddress: string | null;
+  readonly companyAddress: string | null; //company postal address, one string
   //Both verbatim as the provider spelled them, because the Deal attributes are free text. The bucketed Company
   //selects are derived from them by toEmployeeRange and toArrBucket.
-  readonly employeeCount: string | null;
-  readonly annualRevenue: string | null;
-  readonly industry: string | null;
-  readonly website: string | null;
-  readonly campaignName: string | null;
+  readonly employeeCount: string | null; //headcount as the provider wrote it
+  readonly annualRevenue: string | null; //revenue as the provider wrote it
+  readonly industry: string | null; //company's industry
+  readonly website: string | null; //company website url
+  readonly campaignName: string | null; //outbound campaign that reached them
   //When the lead became interested, epoch milliseconds. Feeds Person Date Added and Deal Moved to Interested At.
-  readonly occurredAtMs: number | null;
+  readonly occurredAtMs: number | null; //when they became interested
 }
 
-/** Every key an Attio location value carries. Sent whole, because a partial location is rejected. */
+//Every key an Attio location value carries. Sent whole, because a partial location is rejected.
 export interface AttioLocation {
-  readonly line_1: string | null;
-  readonly line_2: string | null;
-  readonly line_3: string | null;
-  readonly line_4: string | null;
-  readonly locality: string | null;
-  readonly region: string | null;
-  readonly postcode: string | null;
-  readonly country_code: string | null;
-  readonly latitude: string | null;
-  readonly longitude: string | null;
+  readonly line_1: string | null; //street address
+  readonly line_2: string | null; //extra address line, unused
+  readonly line_3: string | null; //extra address line, unused
+  readonly line_4: string | null; //extra address line, unused
+  readonly locality: string | null; //city
+  readonly region: string | null; //state or province
+  readonly postcode: string | null; //postal or zip code
+  readonly country_code: string | null; //two-letter country code, e.g. "US"
+  readonly latitude: string | null; //map coordinate, unused
+  readonly longitude: string | null; //map coordinate, unused
 }
 
 //---------------------------------------------------------------------------------------------------------
 //Reading a scalar back OUT of a value Attio returned. Needed only for the multiselect attributes below, where
 //a write has to include what is already there. Each attribute type spells its scalar differently.
 //---------------------------------------------------------------------------------------------------------
-type ScalarReader = (value: Record<string, unknown>) => string | null;
+type ScalarReader = (value: Record<string, unknown>) => string | null; //function: attio value in, text out
 
+//What an attribute write did: which slugs stuck and which were dropped.
 export interface AttributeWriteResult {
   /** The slugs Attio accepted. */
-  readonly written: readonly string[];
+  readonly written: readonly string[]; //attributes that were saved
   /** The slugs Attio rejected, which the event continued without. */
-  readonly dropped: readonly string[];
+  readonly dropped: readonly string[]; //attributes attio refused
 }
 
+//The company a lead was matched to or created as.
 export interface ResolvedCompany {
-  readonly id: string;
+  readonly id: string; //attio record id of the company
   /** The name Attio holds, which is what the deal is named after - not what the provider called it. */
-  readonly name: string | null;
+  readonly name: string | null; //company name as attio has it
 }
 
+//How suppressing the lead went on one platform.
 export interface SuppressionOutcome {
-  readonly platform: string;
-  readonly status: "suppressed" | "skipped" | "failed";
-  readonly detail: string | null;
+  readonly platform: string; //which platform this is about
+  readonly status: "suppressed" | "skipped" | "failed"; //what happened there
+  readonly detail: string | null; //extra info or error message
 }
 
+//How suppressing the lead went across every platform.
 export interface SuppressionResult {
-  readonly outcomes: readonly SuppressionOutcome[];
+  readonly outcomes: readonly SuppressionOutcome[]; //one result per platform
   /** One entry per platform that could not be suppressed. Empty means the lead is suppressed everywhere. */
-  readonly failures: readonly string[];
+  readonly failures: readonly string[]; //platforms that failed, with reasons
 }
 
+//Everything a provider hands the shared workflow: the lead plus its own lookups.
 export interface InterestedWorkflow {
-  readonly lead: InterestedLead;
+  readonly lead: InterestedLead; //the normalised lead
   /**
    * How this provider identifies the person in Attio, in its own order of confidence - HeyReach leads with a
    * profile URL, Instantly and Aircall with an address. Returning null means no such person exists yet and one
    * is created from the lead.
    */
-  readonly findPerson: () => Promise<AttioPerson | null>;
+  readonly findPerson: () => Promise<AttioPerson | null>; //finds the existing person, or null
   /**
    * This provider's own message history, already rendered for the note. A thunk rather than a string because
    * fetching a thread costs a request, and it should not be paid until the lead is known to be recordable.
    */
-  readonly history: () => Promise<string>;
+  readonly history: () => Promise<string>; //builds the note text when asked
   /** What this event is called in the logs - "aircall call 4821", "heyreach-interested". */
-  readonly subject: string;
+  readonly subject: string; //name of this event in logs
 }
 
+//What recording an interested lead produced.
 export interface InterestedOutcome {
-  readonly personId: string;
-  readonly personName: string;
-  readonly dealId: string;
-  readonly companyId: string | null;
-  readonly suppression: SuppressionResult;
+  readonly personId: string; //attio id of the person
+  readonly personName: string; //the person's display name
+  readonly dealId: string; //attio id of the deal
+  readonly companyId: string | null; //attio id of the company, if any
+  readonly suppression: SuppressionResult; //how suppression went per platform
   /**
    * True when this event repeated one already recorded and the workflow declined to write anything. The ids
    * are the existing records' - see recentlyNoted. Routes report it so a suppressed repeat reads as a
    * decision in the response, not as a silent success.
    */
-  readonly duplicate: boolean;
+  readonly duplicate: boolean; //true if this was a skipped repeat
 }
 
 //A magnitude suffix on a number: 4.3M is 4,300,000. Providers abbreviate revenue and headcount this way, and
 //reading "4.3M" as the digits 43 would be wrong by six orders of magnitude - silently, and permanently.
-const MAGNITUDES: Readonly<Record<string, number>> = { k: 1_000, m: 1_000_000, b: 1_000_000_000, t: 1_000_000_000_000 };
+const MAGNITUDES: Readonly<Record<string, number>> = { k: 1_000, m: 1_000_000, b: 1_000_000_000, t: 1_000_000_000_000 }; //suffix letter to multiplier
 
 //Hosts that are never a company's own domain. A provider that puts a LinkedIn or Facebook page where a website
 //belongs - which they do - would otherwise write "linkedin.com" into Attio's Domains attribute, and Domains is
 //UNIQUE: the first company to claim it takes the slot, and every company after that fails to match or to save.
 //One bad value here does lasting damage to records it never touched, so the list errs on the side of refusing.
-const NEVER_A_COMPANY_DOMAIN: ReadonlySet<string> = new Set([
+const NEVER_A_COMPANY_DOMAIN: ReadonlySet<string> = new Set([ //hosts never saved as a company domain
   "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com", "tiktok.com",
   "crunchbase.com", "angel.co", "wellfound.com", "github.com", "medium.com", "substack.com",
   "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com", "icloud.com", "aol.com",
@@ -182,53 +188,53 @@ const NEVER_A_COMPANY_DOMAIN: ReadonlySet<string> = new Set([
 //A country name to its ISO 3166-1 alpha-2 code, because Attio's location attribute stores the code.
 //Deliberately short: it covers the countries this workspace's lead data actually contains, and an address whose
 //country is not listed simply gets no structured location. Extend it as new markets appear.
-const COUNTRY_CODES: Readonly<Record<string, string>> = {
-  "united states": "US",
-  "united states of america": "US",
-  usa: "US",
-  us: "US",
-  canada: "CA",
-  "united kingdom": "GB",
-  uk: "GB",
-  "great britain": "GB",
-  england: "GB",
-  scotland: "GB",
-  wales: "GB",
-  ireland: "IE",
-  australia: "AU",
-  "new zealand": "NZ",
-  germany: "DE",
-  france: "FR",
-  spain: "ES",
-  italy: "IT",
-  netherlands: "NL",
-  belgium: "BE",
-  switzerland: "CH",
-  austria: "AT",
-  sweden: "SE",
-  norway: "NO",
-  denmark: "DK",
-  finland: "FI",
-  poland: "PL",
-  portugal: "PT",
-  mexico: "MX",
-  brazil: "BR",
-  india: "IN",
-  singapore: "SG",
-  japan: "JP",
-  israel: "IL",
-  "south africa": "ZA",
-  "united arab emirates": "AE",
+const COUNTRY_CODES: Readonly<Record<string, string>> = { //country name to two-letter code
+  "united states": "US", //united states
+  "united states of america": "US", //united states, long form
+  usa: "US", //united states, short form
+  us: "US", //united states, shortest form
+  canada: "CA", //canada
+  "united kingdom": "GB", //united kingdom
+  uk: "GB", //united kingdom, short form
+  "great britain": "GB", //united kingdom, other name
+  england: "GB", //part of the uk
+  scotland: "GB", //part of the uk
+  wales: "GB", //part of the uk
+  ireland: "IE", //ireland
+  australia: "AU", //australia
+  "new zealand": "NZ", //new zealand
+  germany: "DE", //germany
+  france: "FR", //france
+  spain: "ES", //spain
+  italy: "IT", //italy
+  netherlands: "NL", //netherlands
+  belgium: "BE", //belgium
+  switzerland: "CH", //switzerland
+  austria: "AT", //austria
+  sweden: "SE", //sweden
+  norway: "NO", //norway
+  denmark: "DK", //denmark
+  finland: "FI", //finland
+  poland: "PL", //poland
+  portugal: "PT", //portugal
+  mexico: "MX", //mexico
+  brazil: "BR", //brazil
+  india: "IN", //india
+  singapore: "SG", //singapore
+  japan: "JP", //japan
+  israel: "IL", //israel
+  "south africa": "ZA", //south africa
+  "united arab emirates": "AE", //united arab emirates
 };
 
 //The multiselect attributes these workflows write. A PATCH REPLACES an attribute rather than appending to it,
 //so for these the existing entries are read and sent back alongside the new one. Every other attribute is left
 //strictly alone once populated; these are the exception because a lead's second address or number is additive
 //information, and skipping the write outright is what silently dropped it before.
-const MULTISELECT_READERS: Readonly<Record<string, ScalarReader>> = {
-  email_addresses: (value) => stringValue(value.email_address) ?? stringValue(value.original_email_address),
-  phone_numbers: (value) => stringValue(value.original_phone_number) ?? stringValue(value.phone_number),
-  domains: (value) => stringValue(value.domain) ?? stringValue(value.root_domain),
+const MULTISELECT_READERS: Readonly<Record<string, ScalarReader>> = { //list attribute slug to its value reader
+  email_addresses: (value) => stringValue(value.email_address) ?? stringValue(value.original_email_address), //reads one saved email
+  phone_numbers: (value) => stringValue(value.original_phone_number) ?? stringValue(value.phone_number), //reads one saved phone number
+  domains: (value) => stringValue(value.domain) ?? stringValue(value.root_domain), //reads one saved domain
 };
 
 //---------------------------------------------------------------------------------------------------------
@@ -254,23 +260,23 @@ const MULTISELECT_READERS: Readonly<Record<string, ScalarReader>> = {
 //
 //All four slugs come from attributionSlugs(), so they are declared once. Companies receive none of them.
 //---------------------------------------------------------------------------------------------------------
-const ALWAYS_OVERWRITE: ReadonlySet<string> = new Set(attributionSlugs());
+const ALWAYS_OVERWRITE: ReadonlySet<string> = new Set(attributionSlugs()); //source slugs that always get replaced
 
 //The Attio DNC list, prepended to the third-party channels. It lives here rather than in the register because
 //it is the only channel that touches Attio, and keeping it here is what lets lib/providers.ts stay free of any
 //Attio import. It is also the channel that governs Aircall dialling, which has no API of its own to call.
 //[LOGIC] USES: addPersonToList, LISTS (lib/attio.ts).
-const ATTIO_DNC_CHANNEL: SuppressionChannel = {
-  platform: "attio DNC list",
-  suppress: async (targets) => {
-    await addPersonToList(targets.personId, LISTS.DNC, targets.personName);
-    return { status: "suppressed" };
+const ATTIO_DNC_CHANNEL: SuppressionChannel = { //the attio do-not-contact channel
+  platform: "attio DNC list", //name shown in logs
+  suppress: async (targets) => { //adds the person to the DNC list
+    await addPersonToList(targets.personId, LISTS.DNC, targets.personName); //put them on the list
+    return { status: "suppressed" }; //report success
   },
 };
 
 //Long enough to cover a provider's retry and a fan-out across campaigns, short enough that a lead who replies
 //again days later still earns a fresh note. Overridable per deployment without a redeploy.
-export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000;
+export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000; //15 minutes
 
 //#endregion
 //=============================================================================================================
@@ -279,34 +285,39 @@ export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000;
 //#region <build the normalised lead>
 
 //#region <default every field>
-/**
- * [LOGIC] Defaults every field, so a provider's extractor names only what it actually has. Absent means null,
- * and null never reaches Attio - see updateAttioAttributes.
- * USES: nothing. Pure.
- */
+//---------------------------------------------------------------------------------------------------------
+//Base function. Builds a full InterestedLead from only the fields a provider has.
+//Input: provider - which platform; fields - whichever lead fields it knows.
+//Output: the lead, with every missing field set to null or an empty list.
+//Workflow: each provider's interested route (aircall, heyreach, instantly, outfound) - builds the lead that
+//recordInterestedLead (steps 0-7) then records.
+//
+//[LOGIC] Defaults every field, so a provider's extractor names only what it actually has. Absent means null,
+//and null never reaches Attio - see updateAttioAttributes.
+//---------------------------------------------------------------------------------------------------------
 export function interestedLead(
   provider: Provider,
   fields: Partial<Omit<InterestedLead, "provider">>,
 ): InterestedLead {
   return {
-    provider,
-    emails: fields.emails ?? [],
-    phones: fields.phones ?? [],
-    firstName: fields.firstName ?? null,
-    lastName: fields.lastName ?? null,
-    linkedin: fields.linkedin ?? null,
-    jobTitle: fields.jobTitle ?? null,
-    description: fields.description ?? null,
-    location: fields.location ?? null,
-    companyName: fields.companyName ?? null,
-    companyDomain: fields.companyDomain ?? null,
-    companyAddress: fields.companyAddress ?? null,
-    employeeCount: fields.employeeCount ?? null,
-    annualRevenue: fields.annualRevenue ?? null,
-    industry: fields.industry ?? null,
-    website: fields.website ?? null,
-    campaignName: fields.campaignName ?? null,
-    occurredAtMs: fields.occurredAtMs ?? null,
+    provider, //same as provider: provider
+    emails: fields.emails ?? [], //missing becomes empty list
+    phones: fields.phones ?? [], //missing becomes empty list
+    firstName: fields.firstName ?? null, //missing becomes null
+    lastName: fields.lastName ?? null, //missing becomes null
+    linkedin: fields.linkedin ?? null, //missing becomes null
+    jobTitle: fields.jobTitle ?? null, //missing becomes null
+    description: fields.description ?? null, //missing becomes null
+    location: fields.location ?? null, //missing becomes null
+    companyName: fields.companyName ?? null, //missing becomes null
+    companyDomain: fields.companyDomain ?? null, //missing becomes null
+    companyAddress: fields.companyAddress ?? null, //missing becomes null
+    employeeCount: fields.employeeCount ?? null, //missing becomes null
+    annualRevenue: fields.annualRevenue ?? null, //missing becomes null
+    industry: fields.industry ?? null, //missing becomes null
+    website: fields.website ?? null, //missing becomes null
+    campaignName: fields.campaignName ?? null, //missing becomes null
+    occurredAtMs: fields.occurredAtMs ?? null, //missing becomes null
   };
 }
 //#endregion
@@ -325,153 +336,189 @@ export function interestedLead(
 
 //#region <counts and buckets>
 //---------------------------------------------------------------------------------------------------------
-//[LOGIC] A count out of a number written any way a provider might write it.
-//FLOW: 1. drop currency symbols, spaces, and thousands separators. 2. a range ("50-100", "1K-5K") keeps its
-//lower bound only. 3. read the leading number, decimal point included. 4. apply a magnitude suffix if one
-//follows it. 5. anything with no leading number at all -> null.
-//Step 2 takes the lower bound rather than a midpoint because it is a value the provider actually stated,
-//not one derived from it. Step 3 stops at the first non-numeric character, so "84 employees" reads as 84.
-//USES: MAGNITUDES (this module). Pure.
+//Base function. Reads a count out of a number written any way a provider might write it.
+//Input: value - text like "4.3M", "$1,200", "50-100", "84 employees".
+//Output: the whole number, or null if there is no leading number.
+//Workflow: interested workflow (recordInterestedLead) step 2 - toEmployeeRange and toArrBucket bucket the company.
+//
+//[LOGIC] A range keeps its lower bound rather than a midpoint because it is a value the provider actually
+//stated, not one derived from it. Reading stops at the first non-numeric character, so "84 employees" reads
+//as 84.
 //---------------------------------------------------------------------------------------------------------
 function toCount(value: string | null): number | null {
-  if (!value) return null;
+  if (!value) return null; //nothing to read
   //Currency symbols and separators carry no quantity; stripping them first leaves a bare number to read.
-  const cleaned = value.replace(/[,\s$£€]/g, "");
+  const cleaned = value.replace(/[,\s$£€]/g, ""); //drop commas, spaces, currency signs
   //A range states two numbers. Only the first is kept - see above.
-  const lowerBound = cleaned.split(/[-–—]/)[0] ?? "";
-  const match = /^(\d+(?:\.\d+)?)([kmbt])?/i.exec(lowerBound);
-  if (!match?.[1]) return null;
-  const amount = Number.parseFloat(match[1]);
-  if (!Number.isFinite(amount)) return null;
-  const magnitude = match[2] ? (MAGNITUDES[match[2].toLowerCase()] ?? 1) : 1;
-  return Math.round(amount * magnitude);
+  const lowerBound = cleaned.split(/[-–—]/)[0] ?? ""; //keep the part before any dash
+  const match = /^(\d+(?:\.\d+)?)([kmbt])?/i.exec(lowerBound); //leading number plus optional suffix
+  if (!match?.[1]) return null; //no number at the start
+  const amount = Number.parseFloat(match[1]); //the number as a decimal
+  if (!Number.isFinite(amount)) return null; //not a real number
+  const magnitude = match[2] ? (MAGNITUDES[match[2].toLowerCase()] ?? 1) : 1; //multiplier for k/m/b/t, else 1
+  return Math.round(amount * magnitude); //the full whole number
 }
 
-/** [LOGIC] A headcount into one of Attio's nine Employee range options. Boundaries follow the labels exactly. */
+//---------------------------------------------------------------------------------------------------------
+//Turns a headcount into one of Attio's nine Employee range options.
+//Input: value - headcount text as the provider wrote it.
+//Output: a range label like "51-250", or null if unreadable or not positive.
+//Uses: toCount (this file).
+//Workflow: interested workflow (recordInterestedLead) step 2 - the company's Employee range, via companyValuesFor.
+//
+//[LOGIC] Boundaries follow the labels exactly.
+//---------------------------------------------------------------------------------------------------------
 export function toEmployeeRange(value: string | null): string | null {
-  const count = toCount(value);
-  if (count === null || count <= 0) return null;
-  if (count <= 10) return "1-10";
-  if (count <= 50) return "11-50";
-  if (count <= 250) return "51-250";
-  if (count <= 1_000) return "251-1K";
-  if (count <= 5_000) return "1K-5K";
-  if (count <= 10_000) return "5K-10K";
-  if (count <= 50_000) return "10K-50K";
-  if (count <= 100_000) return "50K-100K";
-  return "100K+";
+  const count = toCount(value); //headcount as a number
+  if (count === null || count <= 0) return null; //no usable headcount
+  if (count <= 10) return "1-10"; //tiny company
+  if (count <= 50) return "11-50"; //next bucket up
+  if (count <= 250) return "51-250"; //next bucket up
+  if (count <= 1_000) return "251-1K"; //next bucket up
+  if (count <= 5_000) return "1K-5K"; //next bucket up
+  if (count <= 10_000) return "5K-10K"; //next bucket up
+  if (count <= 50_000) return "10K-50K"; //next bucket up
+  if (count <= 100_000) return "50K-100K"; //next bucket up
+  return "100K+"; //biggest bucket
 }
 
-/** [LOGIC] A revenue figure in dollars into one of Attio's nine Estimated ARR options. */
+//---------------------------------------------------------------------------------------------------------
+//Turns a revenue figure in dollars into one of Attio's nine Estimated ARR options.
+//Input: value - revenue text as the provider wrote it.
+//Output: a bucket label like "$1M-$10M", or null if unreadable or not positive.
+//Uses: toCount (this file).
+//Workflow: interested workflow (recordInterestedLead) step 2 - the company's Estimated ARR, via companyValuesFor.
+//---------------------------------------------------------------------------------------------------------
 export function toArrBucket(value: string | null): string | null {
-  const amount = toCount(value);
-  if (amount === null || amount <= 0) return null;
-  if (amount < 1_000_000) return "$0-$1M";
-  if (amount < 10_000_000) return "$1M-$10M";
-  if (amount < 50_000_000) return "$10M-$50M";
-  if (amount < 100_000_000) return "$50M-$100M";
-  if (amount < 250_000_000) return "$100M-$250M";
-  if (amount < 500_000_000) return "$250M-$500M";
-  if (amount < 1_000_000_000) return "$500M-$1B";
-  if (amount < 10_000_000_000) return "$1B-$10B";
-  return "$10B+";
+  const amount = toCount(value); //revenue as a number
+  if (amount === null || amount <= 0) return null; //no usable revenue
+  if (amount < 1_000_000) return "$0-$1M"; //under a million
+  if (amount < 10_000_000) return "$1M-$10M"; //next bucket up
+  if (amount < 50_000_000) return "$10M-$50M"; //next bucket up
+  if (amount < 100_000_000) return "$50M-$100M"; //next bucket up
+  if (amount < 250_000_000) return "$100M-$250M"; //next bucket up
+  if (amount < 500_000_000) return "$250M-$500M"; //next bucket up
+  if (amount < 1_000_000_000) return "$500M-$1B"; //next bucket up
+  if (amount < 10_000_000_000) return "$1B-$10B"; //next bucket up
+  return "$10B+"; //biggest bucket
 }
 //#endregion
 
 //#region <domains>
 //---------------------------------------------------------------------------------------------------------
-//[LOGIC] A hostname out of whatever a provider called a website, or null if it is not this company's own.
-//FLOW: 1. no input -> null. 2. parse as a URL so a path, port, or query cannot survive. 3. lowercase and drop
-//a leading "www.". 4. reject anything without a dot, or with whitespace. 5. reject a known non-company host.
-//Step 2 adds a scheme when there is none, because a bare hostname will not parse as a URL without one.
-//Step 5 is the important one - see NEVER_A_COMPANY_DOMAIN. Attio's Domains attribute is unique, so a wrong
-//value is not merely wrong on this record; it takes a slot no other company can then claim.
-//USES: NEVER_A_COMPANY_DOMAIN (this module). Pure.
+//Base function. Gets a clean hostname from whatever a provider called a website.
+//Input: value - a url, bare hostname, or anything else the provider sent.
+//Output: e.g. "acme.com", or null if it is not this company's own domain.
+//Workflow: interested workflow (recordInterestedLead) step 2 - the domain used to find or create the company.
+//
+//[LOGIC] A scheme is added when there is none, because a bare hostname will not parse as a URL without one.
+//Parsing as a URL is what stops a path, port, or query surviving.
+//Rejecting a known non-company host is the important part - see NEVER_A_COMPANY_DOMAIN. Attio's Domains
+//attribute is unique, so a wrong value is not merely wrong on this record; it takes a slot no other company
+//can then claim.
 //---------------------------------------------------------------------------------------------------------
 export function toDomain(value: string | null): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  let host: string;
+  if (!value) return null; //nothing given
+  const trimmed = value.trim(); //remove surrounding spaces
+  if (!trimmed) return null; //only spaces, nothing given
+  let host: string; //the hostname, once parsed
   try {
-    host = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname;
+    host = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname; //parse as url, keep host only
   } catch {
-    return null;
+    return null; //not parseable as a url
   }
-  const domain = host.toLowerCase().replace(/^www\./, "");
+  const domain = host.toLowerCase().replace(/^www\./, ""); //lowercase, drop leading "www."
   //A domain has a dot and no whitespace. Rejects "localhost" and a company name that arrived here by mistake.
-  if (!domain.includes(".") || /\s/.test(domain)) return null;
-  if (NEVER_A_COMPANY_DOMAIN.has(domain)) {
-    console.warn(
+  if (!domain.includes(".") || /\s/.test(domain)) return null; //does not look like a domain
+  if (NEVER_A_COMPANY_DOMAIN.has(domain)) { //social, code, or mailbox host
+    console.warn( //log why it was refused
       `[attio] ${JSON.stringify(domain)} was not written as a company domain: it is a social, code, or mailbox host, and Domains is unique in Attio - claiming it would block every other company that shares it`,
     );
-    return null;
+    return null; //refuse it
   }
-  return domain;
+  return domain; //the clean domain
 }
 //#endregion
 
 //#region <postal addresses>
 //---------------------------------------------------------------------------------------------------------
-//A comma-separated postal address into Attio's structured location.
+//Base function. Turns a comma-separated postal address into Attio's structured location.
+//Input: value - the address as one string.
+//Output: an AttioLocation, or null unless the country resolves to an ISO code.
+//Workflow: interested workflow (recordInterestedLead) step 2 - the company's primary location, via companyValuesFor.
+//
 //Providers send "<street>, <city>, <region>, <country>, <postcode>" - country second to last, postcode last -
 //so the address is read from the RIGHT, where the fields are positional, and whatever remains on the left
 //becomes the street line.
-//Returns null unless the country resolves to an ISO code. Without one Attio has no location to store, and a
-//guessed country is worse than none: it would place the company on the wrong continent in every filter.
+//Without a country code Attio has no location to store, and a guessed country is worse than none: it would
+//place the company on the wrong continent in every filter.
 //---------------------------------------------------------------------------------------------------------
 export function parsePostalAddress(value: string | null): AttioLocation | null {
-  if (!value) return null;
-  const parts = value
+  if (!value) return null; //no address given
+  const parts = value //split into trimmed, non-empty pieces
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
-  if (parts.length < 3) return null;
+  if (parts.length < 3) return null; //too few pieces to be an address
 
   //A trailing field carrying a digit is a postcode, not a country. Dropping it first leaves the country last
   //whether or not a postcode was present.
-  let postcode: string | null = null;
-  const tail = parts[parts.length - 1];
-  if (tail !== undefined && /\d/.test(tail) && parts.length > 3) {
-    postcode = tail;
-    parts.pop();
+  let postcode: string | null = null; //postcode, if one is found
+  const tail = parts[parts.length - 1]; //the last piece
+  if (tail !== undefined && /\d/.test(tail) && parts.length > 3) { //last piece has a digit
+    postcode = tail; //it is the postcode
+    parts.pop(); //remove it from the list
   }
 
-  const country = parts.pop();
-  const countryCode = country ? COUNTRY_CODES[country.toLowerCase()] : undefined;
-  if (!countryCode) return null;
+  const country = parts.pop(); //country is now the last piece
+  const countryCode = country ? COUNTRY_CODES[country.toLowerCase()] : undefined; //look up its two-letter code
+  if (!countryCode) return null; //unknown country, no location
 
-  const region = parts.pop() ?? null;
-  const locality = parts.pop() ?? null;
+  const region = parts.pop() ?? null; //state or province
+  const locality = parts.pop() ?? null; //city
   //Anything still to the left is street address, rejoined as it arrived.
-  const line1 = parts.length > 0 ? parts.join(", ") : null;
+  const line1 = parts.length > 0 ? parts.join(", ") : null; //street, or null if none left
 
   return {
-    line_1: line1,
-    line_2: null,
-    line_3: null,
-    line_4: null,
-    locality,
-    region,
-    postcode,
-    country_code: countryCode,
-    latitude: null,
-    longitude: null,
+    line_1: line1, //street address
+    line_2: null, //unused
+    line_3: null, //unused
+    line_4: null, //unused
+    locality, //same as locality: locality
+    region, //same as region: region
+    postcode, //same as postcode: postcode
+    country_code: countryCode, //two-letter country code
+    latitude: null, //unknown
+    longitude: null, //unknown
   };
 }
 //#endregion
 
 //#region <dates and times>
-/** An epoch-millisecond instant as an Attio timestamp, or null when the caller had no time to give. */
+//---------------------------------------------------------------------------------------------------------
+//Base function. Writes an epoch-millisecond instant as an Attio timestamp.
+//Input: ms - the instant, or null when the caller had no time to give.
+//Output: an ISO timestamp string, or null.
+//Workflow: interested workflow (recordInterestedLead) step 5 - the deal's Moved to Interested At, via
+//dealValuesFor; also used by toDate.
+//---------------------------------------------------------------------------------------------------------
 export function toTimestamp(ms: number | null): string | null {
-  if (ms === null || !Number.isFinite(ms)) return null;
-  return new Date(ms).toISOString();
+  if (ms === null || !Number.isFinite(ms)) return null; //no usable time
+  return new Date(ms).toISOString(); //e.g. "2026-08-28T17:04:05.000Z"
 }
 
-/** The same instant as an Attio date. Date-typed attributes reject a full timestamp. */
+//---------------------------------------------------------------------------------------------------------
+//Writes the same instant as an Attio date (no time part).
+//Input: ms - the instant, or null.
+//Output: "YYYY-MM-DD", or null.
+//Uses: toTimestamp (this file).
+//Workflow: interested workflow (recordInterestedLead) steps 1 and 5 - the person's Date Added, via personValuesFor.
+//
+//Date-typed attributes reject a full timestamp.
+//---------------------------------------------------------------------------------------------------------
 export function toDate(ms: number | null): string | null {
-  const iso = toTimestamp(ms);
-  return iso ? iso.slice(0, 10) : null;
+  const iso = toTimestamp(ms); //full timestamp first
+  return iso ? iso.slice(0, 10) : null; //keep just the date part
 }
 //#endregion
 
@@ -482,165 +529,193 @@ export function toDate(ms: number | null): string | null {
 //#region <write attributes to attio>
 
 //#region <merge multiselects>
-/**
- * [LOGIC] The scalars an attribute currently holds, or null if ANY entry could not be read. All-or-nothing on
- * purpose: a partial read is what would silently delete the entries it failed to see - see mergeMultiselect.
- * USES: arrayValue, isJsonObject (lib/json.ts). Pure.
- */
+//---------------------------------------------------------------------------------------------------------
+//Reads the scalars a list attribute currently holds on a record.
+//Input: record - the Attio record; slug - the attribute; read - how to read one entry.
+//Output: the values as strings, or null if ANY entry could not be read.
+//Uses: arrayValue, isJsonObject (lib/json.ts).
+//Workflow: interested workflow (recordInterestedLead) step 5 - mergeMultiselect's view of what is already there.
+//
+//[LOGIC] All-or-nothing on purpose: a partial read is what would silently delete the entries it failed to
+//see - see mergeMultiselect.
+//---------------------------------------------------------------------------------------------------------
 function existingScalars(record: AttioRecord, slug: string, read: ScalarReader): string[] | null {
-  const scalars: string[] = [];
-  for (const entry of arrayValue(record.rawValues, slug)) {
-    if (!isJsonObject(entry)) return null;
-    const scalar = read(entry);
-    if (scalar === null) return null;
-    scalars.push(scalar);
+  const scalars: string[] = []; //values read so far
+  for (const entry of arrayValue(record.rawValues, slug)) { //each saved entry
+    if (!isJsonObject(entry)) return null; //unreadable entry, give up
+    const scalar = read(entry); //pull out its text
+    if (scalar === null) return null; //unreadable entry, give up
+    scalars.push(scalar); //keep it
   }
-  return scalars;
+  return scalars; //every saved value
 }
 
 //---------------------------------------------------------------------------------------------------------
-//Existing entries plus whichever candidates are new, or null to write nothing at all.
+//Builds the full new value of a list attribute: existing entries plus whichever candidates are new.
+//Input: record - the Attio record; slug - the attribute; candidate - values the provider has.
+//Output: the merged list, or null to write nothing at all.
+//Uses: existingScalars (this file); arrayValue (lib/json.ts).
+//Workflow: interested workflow (recordInterestedLead) step 5 - updateAttioAttributes, for emails, phones, domains.
+//
 //[SECURITY] The null returns are the important part. This is the only place in the codebase that sends Attio a
 //value it did not itself supply, and it does so on a REPLACING write: if the existing entries were read back
 //even slightly wrong, the patch would delete a real address or phone number. So an attribute holding anything
 //this cannot read in full is declined outright, and an attribute that would gain nothing is left untouched
 //rather than rewritten to its own value.
-//FLOW: 1. no reader for this slug -> decline. 2. read the existing entries; unreadable -> decline. 3. keep only
-//candidates not already present, compared case-insensitively. 4. nothing new -> decline. 5. existing + new.
-//[DEBUG] The decline at step 2 warns, because an attribute quietly not gaining a value is undiagnosable.
-//USES: existingScalars, MULTISELECT_READERS (this module); arrayValue (lib/json.ts).
+//[DEBUG] The decline on an unreadable existing entry warns, because an attribute quietly not gaining a value
+//is undiagnosable.
 //---------------------------------------------------------------------------------------------------------
 function mergeMultiselect(
   record: AttioRecord,
   slug: string,
   candidate: readonly string[],
 ): readonly string[] | null {
-  const read = MULTISELECT_READERS[slug];
-  if (!read) return null;
-  const existing = existingScalars(record, slug, read);
-  if (existing === null) {
-    console.warn(
+  const read = MULTISELECT_READERS[slug]; //reader for this attribute
+  if (!read) return null; //not a list attribute we handle
+  const existing = existingScalars(record, slug, read); //what attio already holds
+  if (existing === null) { //could not read it all
+    console.warn( //log the skipped attribute
       `[attio] ${slug} was left alone: it already holds ${arrayValue(record.rawValues, slug).length} entr(ies) that could not all be read back, and this attribute can only be written whole. Nothing was risked, but nothing was added either.`,
     );
-    return null;
+    return null; //write nothing
   }
   //Case-insensitive, because an address or domain differing only in case is the same one and must not be added
   //twice. Phone numbers are E.164 by the time they arrive, so this costs them nothing.
-  const seen = new Set(existing.map((value) => value.toLowerCase()));
-  const additions = candidate.filter((value) => {
-    const key = value.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const seen = new Set(existing.map((value) => value.toLowerCase())); //values already present, lowercase
+  const additions = candidate.filter((value) => { //keep only new values
+    const key = value.toLowerCase(); //compare ignoring case
+    if (seen.has(key)) return false; //already there, skip
+    seen.add(key); //remember it, so no repeats
+    return true; //new value, keep
   });
-  if (additions.length === 0) return null;
-  return [...existing, ...additions];
+  if (additions.length === 0) return null; //nothing new, write nothing
+  return [...existing, ...additions]; //old values then new ones
 }
 //#endregion
 
 //#region <drop empty values>
-/** [LOGIC] Nothing worth writing: absent, blank, or an empty list. Distinct from a value Attio already holds. */
+//---------------------------------------------------------------------------------------------------------
+//Base function. Says whether a value has nothing worth writing.
+//Input: value - any candidate attribute value.
+//Output: true if absent, blank, or an empty list.
+//Workflow: interested workflow (recordInterestedLead) steps 1, 2 and 5 - withoutEmpty and updateAttioAttributes.
+//
+//[LOGIC] Distinct from a value Attio already holds.
+//---------------------------------------------------------------------------------------------------------
 function isEmptyCandidate(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
-  if (typeof value === "string") return value.trim().length === 0;
-  if (Array.isArray(value)) return value.length === 0;
-  return false;
+  if (value === undefined || value === null) return true; //absent
+  if (typeof value === "string") return value.trim().length === 0; //blank text
+  if (Array.isArray(value)) return value.length === 0; //empty list
+  return false; //anything else counts as a value
 }
 
 //---------------------------------------------------------------------------------------------------------
-//[LOGIC] The same values with every empty one removed, so a slug the provider knows nothing about is absent
-//rather than present-and-null.
-//This is what the mappers below return. It matters most on CREATION: createPerson and createCompany send their
-//values to Attio verbatim, with none of the filtering updateAttioAttributes does, and a null or an empty array
-//on a create is an instruction to Attio about an attribute rather than silence about it.
-//USES: isEmptyCandidate (this module). Pure.
+//Copies a set of attribute values with every empty one removed.
+//Input: values - slug-to-value map.
+//Output: the same map without empty values.
+//Uses: isEmptyCandidate (this file).
+//Workflow: interested workflow (recordInterestedLead) steps 1, 2 and 5 - the last step of personValuesFor,
+//companyValuesFor and dealValuesFor.
+//
+//[LOGIC] So a slug the provider knows nothing about is absent rather than present-and-null.
+//It matters most on CREATION: createPerson and createCompany send their values to Attio verbatim, with none of
+//the filtering updateAttioAttributes does, and a null or an empty array on a create is an instruction to Attio
+//about an attribute rather than silence about it.
 //---------------------------------------------------------------------------------------------------------
 function withoutEmpty(values: Record<string, unknown>): AttioValues {
-  return Object.fromEntries(Object.entries(values).filter(([, value]) => !isEmptyCandidate(value)));
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => !isEmptyCandidate(value))); //keep non-empty pairs only
 }
 //#endregion
 
 //#region <patch records>
 //---------------------------------------------------------------------------------------------------------
 //Writes the fillable attributes, salvaging as many as Attio will take.
-//FLOW: 1. one PATCH with all of them, which is the normal case and the only request usually made. 2. if that
-//is rejected on the CONTENT of the write - a 400 or 422 - retry them one at a time, so one value Attio will not
-//accept costs only itself. 3. anything still rejected is dropped.
+//Input: object - people, companies or deals; recordId - the record; fillable - slug-to-value map; label - name
+//for logs.
+//Output: { written, dropped }. Throws only if the empty no-op write fails.
+//Uses: patchRecord (lib/attio.ts); errorMessage (lib/json.ts).
+//Workflow: interested workflow (recordInterestedLead) steps 2 and 5 - the actual PATCH for updateAttioAttributes.
+//
+//[LOGIC] One PATCH with all of them is the normal case and the only request usually made. If that is rejected
+//on the CONTENT of the write - a 400 or 422 - they are retried one at a time, so one value Attio will not
+//accept costs only itself.
 //A rejection that is not about content - 401, 403, 404, a 5xx, a transport failure - is not retried: the write
 //is unavailable for reasons no single attribute caused, and N further attempts would fail identically.
 //NEVER THROWS. Attribute enrichment is the last and least of what an interested event does; the person, the
 //company, the deal, and the notes are already committed by the time it runs, and losing all of them because one
 //provider value would not fit an Attio attribute is a far worse outcome than a blank field. What was dropped is
 //logged, because an attribute silently missing with no record of why is undiagnosable.
-//---------------------------------------------------------------------------------------------------------
-//USES: patchRecord, AttioApiError (lib/attio.ts); errorMessage (lib/json.ts).
 //[DEBUG] Everything dropped is named individually and then counted, so a missing attribute has a cause on
 //record. patchRecord logs its own FAILED line first; the [attio] line that follows says what was done about it.
+//---------------------------------------------------------------------------------------------------------
 async function writeSalvagingRejections(
   object: AttioObject,
   recordId: string,
   fillable: Record<string, unknown>,
   label: string,
 ): Promise<AttributeWriteResult> {
-  const slugs = Object.keys(fillable);
-  if (slugs.length === 0) {
-    await patchRecord(object, recordId, {}, label);
-    return { written: [], dropped: [] };
+  const slugs = Object.keys(fillable); //names of attributes to write
+  if (slugs.length === 0) { //nothing to write
+    await patchRecord(object, recordId, {}, label); //empty patch, nothing changes
+    return { written: [], dropped: [] }; //nothing written or dropped
   }
 
   try {
-    await patchRecord(object, recordId, fillable, label);
-    return { written: slugs, dropped: [] };
+    await patchRecord(object, recordId, fillable, label); //write everything at once
+    return { written: slugs, dropped: [] }; //all of it stuck
   } catch (error) {
     //Only a complaint about the content is worth taking apart attribute by attribute.
-    const isContentRejection =
+    const isContentRejection = //attio refused the values themselves
       error instanceof AttioApiError && (error.status === 400 || error.status === 422);
-    if (!isContentRejection) {
-      console.warn(
+    if (!isContentRejection) { //some other failure
+      console.warn( //log that everything was dropped
         `[attio] ${object} ${label}: dropped ${slugs.join(", ")} - the write failed for a reason no single attribute caused (${errorMessage(error)}). The event continues without them.`,
       );
-      return { written: [], dropped: slugs };
+      return { written: [], dropped: slugs }; //give up on all of them
     }
-    console.warn(
+    console.warn( //log the one-at-a-time retry
       `[attio] ${object} ${label}: Attio rejected the write on its content, so the ${slugs.length} attribute(s) are retried one at a time - one value it will not accept should cost only itself`,
     );
   }
 
-  const written: string[] = [];
-  const dropped: string[] = [];
-  for (const slug of slugs) {
+  const written: string[] = []; //attributes that stuck
+  const dropped: string[] = []; //attributes attio refused
+  for (const slug of slugs) { //each attribute on its own
     try {
-      await patchRecord(object, recordId, { [slug]: fillable[slug] }, label);
-      written.push(slug);
+      await patchRecord(object, recordId, { [slug]: fillable[slug] }, label); //write just this one
+      written.push(slug); //it stuck
     } catch (error) {
-      dropped.push(slug);
-      console.warn(
+      dropped.push(slug); //it was refused
+      console.warn( //log the dropped attribute
         `[attio] ${object} ${label}: dropped ${slug} - Attio would not accept the value (${errorMessage(error)}). The event continues without it.`,
       );
     }
   }
-  if (dropped.length > 0) {
-    console.warn(
+  if (dropped.length > 0) { //something was refused
+    console.warn( //log the totals
       `[attio] ${object} ${label}: wrote ${written.length} attribute(s), dropped ${dropped.length} (${dropped.join(", ")})`,
     );
   }
-  return { written, dropped };
+  return { written, dropped }; //what stuck and what didn't
 }
 
 //---------------------------------------------------------------------------------------------------------
+//Writes a lead's values onto an Attio record, filling blanks without overwriting.
+//Input: object - people, companies or deals; target - the record or its id; candidate - values to offer;
+//recordName - optional name for logs.
+//Output: { written, dropped }. Throws only if reading the record by id fails.
+//Uses: fetchRecord, recordDisplayName (lib/attio.ts); runLogApplied (lib/run-log.ts); isEmptyCandidate,
+//mergeMultiselect, writeSalvagingRejections (this file).
+//Workflow: interested workflow (recordInterestedLead) step 5 - person and deal attributes; also step 2 - fills
+//the company's blanks in resolveInterestedCompany.
+//
 //THE write path for attributes on an interested lead's records. All three interested workflows go through here.
 //
 //The rule it exists to enforce: third-party data fills gaps in Attio and never contradicts it. Someone who
 //corrected a job title in the CRM must not find it replaced by whatever the provider still believes. The ONE
 //exception is ALWAYS_OVERWRITE, where the run's own value is the newer truth by definition.
+//A record id is read first, because what may be written depends on what is already there.
 //
-//FLOW: 1. `target` given as a record id -> read it, because what may be written depends on what is already
-//there. 2. per candidate attribute: drop the empty ones, merge the multiselects, take the ALWAYS_OVERWRITE
-//slugs whatever Attio holds, skip any other slug already populated. 3. nothing left -> no request. 4. otherwise
-//write what remains, salvaging what Attio will take.
-//
-//USES: fetchRecord, patchRecord, recordDisplayName (lib/attio.ts); mergeMultiselect, isEmptyCandidate,
-//ALWAYS_OVERWRITE, writeSalvagingRejections (this module).
 //[PERF] One GET when handed an id, none when handed a record. Callers holding a record they just created or
 //queried pass the record, so the common path costs a single PATCH.
 //[STABILITY] Does not throw once the record is in hand - see writeSalvagingRejections. A read that fails still
@@ -652,31 +727,31 @@ export async function updateAttioAttributes(
   candidate: AttioValues,
   recordName?: string,
 ): Promise<AttributeWriteResult> {
-  const record = typeof target === "string" ? await fetchRecord(object, target) : target;
-  const label = recordName ?? recordDisplayName(record) ?? record.id.record_id;
+  const record = typeof target === "string" ? await fetchRecord(object, target) : target; //read it if given an id
+  const label = recordName ?? recordDisplayName(record) ?? record.id.record_id; //name to use in logs
 
-  const fillable: Record<string, unknown> = {};
-  for (const [slug, value] of Object.entries(candidate)) {
-    if (isEmptyCandidate(value)) continue;
+  const fillable: Record<string, unknown> = {}; //attributes we are allowed to write
+  for (const [slug, value] of Object.entries(candidate)) { //each offered attribute
+    if (isEmptyCandidate(value)) continue; //nothing to write, skip
 
-    if (slug in MULTISELECT_READERS && Array.isArray(value)) {
-      const strings = value.filter((entry): entry is string => typeof entry === "string");
-      const merged = mergeMultiselect(record, slug, strings);
-      if (merged) fillable[slug] = merged;
-      continue;
+    if (slug in MULTISELECT_READERS && Array.isArray(value)) { //a list attribute
+      const strings = value.filter((entry): entry is string => typeof entry === "string"); //keep text entries only
+      const merged = mergeMultiselect(record, slug, strings); //old values plus new ones
+      if (merged) fillable[slug] = merged; //write only if something was added
+      continue; //done with this attribute
     }
     //Populated means "Attio holds something here". A PATCH would replace the whole attribute rather than merge
     //into it, so anything already present is left strictly alone - unless the slug is one this run is entitled
     //to restate outright. See ALWAYS_OVERWRITE.
-    if (!ALWAYS_OVERWRITE.has(slug) && record.populatedAttributes.has(slug)) continue;
-    fillable[slug] = value;
+    if (!ALWAYS_OVERWRITE.has(slug) && record.populatedAttributes.has(slug)) continue; //already filled, leave it
+    fillable[slug] = value; //blank or overwritable, write it
   }
 
-  const result = await writeSalvagingRejections(object, record.id.record_id, fillable, label);
+  const result = await writeSalvagingRejections(object, record.id.record_id, fillable, label); //send the write
   //debug note in attio=
   runLogApplied(object, record.id.record_id, fillable, result.written); //write down which changes actually stuck
   //===============
-  return result;
+  return result; //what stuck and what didn't
 }
 //#endregion
 
@@ -693,55 +768,75 @@ export async function updateAttioAttributes(
 //---------------------------------------------------------------------------------------------------------
 
 //#region <person, company, deal>
-/** [LOGIC] USES: attributionValues (lib/providers.ts); toDate, withoutEmpty (this module). Pure. */
+//---------------------------------------------------------------------------------------------------------
+//Maps a lead onto Person attribute values.
+//Input: lead - the normalised lead; companyId - the resolved company's id, or null.
+//Output: slug-to-value map with empty values removed.
+//Uses: attributionValues (lib/providers.ts); toDate, withoutEmpty (this file).
+//Workflow: interested workflow (recordInterestedLead) step 1 - the values a new person is created with; and
+//step 5 - the values offered to an existing person.
+//---------------------------------------------------------------------------------------------------------
 export function personValuesFor(lead: InterestedLead, companyId: string | null = null): AttioValues {
-  const values: Record<string, unknown> = {
-    email_addresses: lead.emails,
-    phone_numbers: lead.phones,
-    linkedin: lead.linkedin,
-    job_title: lead.jobTitle,
-    description: lead.description,
-    location: lead.location,
-    campaign_name: lead.campaignName,
-    date_added: toDate(lead.occurredAtMs),
+  const values: Record<string, unknown> = { //attio slug to value
+    email_addresses: lead.emails, //every email
+    phone_numbers: lead.phones, //every phone number
+    linkedin: lead.linkedin, //linkedin profile url
+    job_title: lead.jobTitle, //job title
+    description: lead.description, //free-text about them
+    location: lead.location, //where they are
+    campaign_name: lead.campaignName, //campaign that reached them
+    date_added: toDate(lead.occurredAtMs), //day they became interested
     //NO lead_source. It is deprecated on both objects, replaced by the discrete pair below - so writing it
     //would be churn on a field nothing reads, and churn that OVERWRITES, since it used to sit in
     //ALWAYS_OVERWRITE. Values already on existing records are left exactly as found; nothing writes the slug
     //now, so nothing can clear it either. The deals object has already had the attribute removed outright.
     //The Person's own discrete pair. Same words as the Deal's, entirely different option IDs, which is why
     //the object is named here rather than the ids being reused - see attributionValues (lib/providers.ts).
-    ...attributionValues("people", lead.provider),
+    ...attributionValues("people", lead.provider), //add the source attributes
   };
-  if (lead.firstName || lead.lastName) {
-    const firstName = lead.firstName ?? "";
-    const lastName = lead.lastName ?? "";
-    values.name = [
+  if (lead.firstName || lead.lastName) { //we know at least one name
+    const firstName = lead.firstName ?? ""; //blank if unknown
+    const lastName = lead.lastName ?? ""; //blank if unknown
+    values.name = [ //attio's name shape
       { first_name: firstName, last_name: lastName, full_name: `${firstName} ${lastName}`.trim() },
     ];
   }
   //Offered whenever a company was resolved; updateAttioAttributes drops it if the person already has one.
-  if (companyId) {
-    values.company = { target_object: "companies", target_record_id: companyId };
+  if (companyId) { //a company was found or made
+    values.company = { target_object: "companies", target_record_id: companyId }; //link the person to it
   }
-  return withoutEmpty(values);
+  return withoutEmpty(values); //drop the empty ones
 }
 
-/** [LOGIC] USES: toDomain, parsePostalAddress, toEmployeeRange, toArrBucket, withoutEmpty (this module). */
+//---------------------------------------------------------------------------------------------------------
+//Maps a lead onto Company attribute values.
+//Input: lead - the normalised lead.
+//Output: slug-to-value map with empty values removed.
+//Uses: toDomain, parsePostalAddress, toEmployeeRange, toArrBucket, withoutEmpty (this file).
+//Workflow: interested workflow (recordInterestedLead) step 2 - creates or fills the company in
+//resolveInterestedCompany.
+//---------------------------------------------------------------------------------------------------------
 export function companyValuesFor(lead: InterestedLead): AttioValues {
-  const domain = toDomain(lead.companyDomain ?? lead.website);
-  return withoutEmpty({
+  const domain = toDomain(lead.companyDomain ?? lead.website); //clean domain, or null
+  return withoutEmpty({ //drop the empty ones
     //A company found only by domain still needs a name, and the domain is the least wrong one available.
-    name: lead.companyName ?? domain,
-    domains: domain ? [domain] : [],
-    primary_location: parsePostalAddress(lead.companyAddress),
-    employee_range: toEmployeeRange(lead.employeeCount),
-    estimated_arr_usd: toArrBucket(lead.annualRevenue),
+    name: lead.companyName ?? domain, //company name, else its domain
+    domains: domain ? [domain] : [], //domain as a list
+    primary_location: parsePostalAddress(lead.companyAddress), //structured address
+    employee_range: toEmployeeRange(lead.employeeCount), //headcount bucket
+    estimated_arr_usd: toArrBucket(lead.annualRevenue), //revenue bucket
   });
 }
 
-/** [LOGIC] USES: attributionValues (lib/providers.ts); toTimestamp, withoutEmpty (this module). Pure. */
+//---------------------------------------------------------------------------------------------------------
+//Maps a lead onto Deal attribute values.
+//Input: lead - the normalised lead.
+//Output: slug-to-value map with empty values removed.
+//Uses: attributionValues (lib/providers.ts); toTimestamp, withoutEmpty (this file).
+//Workflow: interested workflow (recordInterestedLead) step 5 - the values offered to the deal.
+//---------------------------------------------------------------------------------------------------------
 export function dealValuesFor(lead: InterestedLead): AttioValues {
-  return withoutEmpty({
+  return withoutEmpty({ //drop the empty ones
     //NO lead_source HERE. The deals object no longer has that attribute at all - it was removed from Attio
     //when deal_source_discrete replaced it. Writing it cost every deal an extra round trip and a warning:
     //writeSalvagingRejections sends one PATCH with everything, Attio rejects the whole batch over the one
@@ -749,18 +844,18 @@ export function dealValuesFor(lead: InterestedLead): AttioValues {
     //tests/live/read-only.test.ts is what catches this class of drift.
     //The discrete attribution pair, written by option ID rather than title so a rename in Attio cannot quietly
     //break them. The DEAL's ids, which differ from the Person's for the same words - see attributionValues.
-    ...attributionValues("deals", lead.provider),
-    campaign_name: lead.campaignName,
-    email: lead.emails[0] ?? null,
-    phone_number_7: lead.phones[0] ?? null,
-    linkedin: lead.linkedin,
-    website: lead.website,
+    ...attributionValues("deals", lead.provider), //add the source attributes
+    campaign_name: lead.campaignName, //campaign that reached them
+    email: lead.emails[0] ?? null, //first email only
+    phone_number_7: lead.phones[0] ?? null, //first phone number only
+    linkedin: lead.linkedin, //linkedin profile url
+    website: lead.website, //company website
     //Free text on the Deal, so these cross over exactly as the provider spelled them. The bucketed equivalents
     //live on the Company.
-    industry: lead.industry,
-    employees: lead.employeeCount,
-    revenue: lead.annualRevenue,
-    moved_to_interested_at: toTimestamp(lead.occurredAtMs),
+    industry: lead.industry, //industry, as written
+    employees: lead.employeeCount, //headcount, as written
+    revenue: lead.annualRevenue, //revenue, as written
+    moved_to_interested_at: toTimestamp(lead.occurredAtMs), //when they became interested
   });
 }
 //#endregion
@@ -773,16 +868,18 @@ export function dealValuesFor(lead: InterestedLead): AttioValues {
 
 //#region <company>
 //---------------------------------------------------------------------------------------------------------
-//The company an interested lead belongs to, found or created, and enriched in passing.
-//FLOW: 1. the person is already linked to one -> that one wins, whatever the provider says. 2. otherwise look
-//it up by domain, then by exact name. 3. still nothing -> create one, but only if there is a name or a domain
-//to create it from. 4. either way, fill its blank attributes.
-//Step 1 is unconditional on purpose: a person's company in Attio is a human's judgement, and a provider's
-//`companyName` string is not grounds for moving them.
-//Step 3's guard is what keeps a cold Aircall dial from creating a company: with no contact in Aircall's address
-//book there is no name, and a company record named after a phone number is worse than no company at all.
-//USES: personCompanyId, fetchRecord, findCompanyByDomain, findCompanyByName, createCompany, recordDisplayName
-//(lib/attio.ts); toDomain, companyValuesFor, updateAttioAttributes (this module).
+//Finds or creates the company an interested lead belongs to, and fills its blank attributes in passing.
+//Input: lead - the normalised lead; person - the lead's Attio person.
+//Output: { id, name } of the company, or null when there is nothing to find or create it from.
+//Uses: personCompanyId, fetchRecord, recordDisplayName, findCompanyByDomain, findCompanyByName, createCompany
+//(lib/attio.ts); runLogRecord (lib/run-log.ts); toDomain, companyValuesFor, updateAttioAttributes (this file).
+//Workflow: interested workflow (recordInterestedLead) step 2 - find or create the company.
+//
+//A person already linked to a company keeps it, unconditionally and on purpose: a person's company in Attio is
+//a human's judgement, and a provider's `companyName` string is not grounds for moving them.
+//The guard before creating is what keeps a cold Aircall dial from creating a company: with no contact in
+//Aircall's address book there is no name, and a company record named after a phone number is worse than no
+//company at all.
 //[DEBUG] Each branch logs which one it took, because "no company" and "the company Attio already had" produce
 //very different deals and the difference is invisible afterwards.
 //---------------------------------------------------------------------------------------------------------
@@ -790,46 +887,50 @@ export async function resolveInterestedCompany(
   lead: InterestedLead,
   person: AttioPerson,
 ): Promise<ResolvedCompany | null> {
-  const linkedId = personCompanyId(person);
-  if (linkedId) {
-    const linked = await fetchRecord("companies", linkedId);
-    console.log(
+  const linkedId = personCompanyId(person); //company already on the person
+  if (linkedId) { //person already has a company
+    const linked = await fetchRecord("companies", linkedId); //read that company
+    console.log( //log which company won
       `[lookup] company: person is already linked to ${recordDisplayName(linked) ?? linkedId}, which the deal will be named after`,
     );
     //debug note in attio=
     runLogRecord("companies", linked, true, recordDisplayName(linked) ?? linkedId); //take a photo of the company before we change it
     //===============
-    await updateAttioAttributes("companies", linked, companyValuesFor(lead));
-    return { id: linkedId, name: recordDisplayName(linked) };
+    await updateAttioAttributes("companies", linked, companyValuesFor(lead)); //fill its blanks
+    return { id: linkedId, name: recordDisplayName(linked) }; //use the linked company
   }
 
-  const domain = toDomain(lead.companyDomain ?? lead.website);
-  const found = (await findCompanyByDomain(domain)) ?? (await findCompanyByName(lead.companyName));
-  if (found) {
+  const domain = toDomain(lead.companyDomain ?? lead.website); //clean domain, or null
+  const found = (await findCompanyByDomain(domain)) ?? (await findCompanyByName(lead.companyName)); //by domain, then by name
+  if (found) { //an existing company matched
     //debug note in attio=
     runLogRecord("companies", found, true, recordDisplayName(found) ?? found.id.record_id); //take a photo of the company before we change it
     //===============
-    await updateAttioAttributes("companies", found, companyValuesFor(lead));
-    return { id: found.id.record_id, name: recordDisplayName(found) };
+    await updateAttioAttributes("companies", found, companyValuesFor(lead)); //fill its blanks
+    return { id: found.id.record_id, name: recordDisplayName(found) }; //use the matched company
   }
 
-  if (!lead.companyName && !domain) {
-    console.log(
+  if (!lead.companyName && !domain) { //nothing to create one from
+    console.log( //log that there is no company
       `[lookup] company: none - neither Attio nor ${lead.provider} has a company for this lead, so none is created and the deal is named for an unknown company`,
     );
-    return null;
+    return null; //no company
   }
-  const created = await createCompany(companyValuesFor(lead));
+  const created = await createCompany(companyValuesFor(lead)); //make a new company
   //debug note in attio=
   runLogRecord("companies", created, false, recordDisplayName(created) ?? created.id.record_id); //brand new company, so there is no before photo
   //===============
-  return { id: created.id.record_id, name: recordDisplayName(created) };
+  return { id: created.id.record_id, name: recordDisplayName(created) }; //use the new company
 }
 //#endregion
 
 //#region <deal name>
 //---------------------------------------------------------------------------------------------------------
-//What a deal this codebase opens is called. Strictly the company name, with no other form.
+//Base function. Names a deal this codebase opens: strictly the company name, with no other form.
+//Input: companyName - the company's name, or null.
+//Output: the trimmed name, or "Unknown Company".
+//Workflow: interested workflow (recordInterestedLead) step 3 - the name a new deal is given.
+//
 //The convention is strict so a person's name never becomes a deal name: a deal belongs to a company even when
 //only one contact there is known.
 //"Unknown Company" is used when neither Attio nor the provider names one, which is honest and, more usefully,
@@ -840,11 +941,10 @@ export async function resolveInterestedCompany(
 //attribute, and a human reading the pipeline sees the company they are dealing with rather than a suffix
 //repeated down the whole column.
 //Deals that already existed are never renamed - see ensureInterestedDeal.
-//USES: nothing. Pure.
 //---------------------------------------------------------------------------------------------------------
 export function interestedDealName(companyName: string | null): string {
-  const name = companyName?.trim();
-  return name ? name : "Unknown Company";
+  const name = companyName?.trim(); //name without outer spaces
+  return name ? name : "Unknown Company"; //fallback when there is no name
 }
 //#endregion
 
@@ -856,10 +956,16 @@ export function interestedDealName(companyName: string | null): string {
 
 //#region <every channel>
 //---------------------------------------------------------------------------------------------------------
-//Stops every outbound channel contacting a lead who has already said yes. One function, called by every
-//interested workflow, because interest is a fact about the person and not about the channel that found it: a
-//lead who answers the phone must stop receiving the cold email sequence too, and the reverse. Suppressing only
-//the channel that happened to report first is how a lead ends up pitched twice.
+//Stops every outbound channel contacting a lead who has already said yes.
+//Input: targets - the person's id and name, plus email and profile url where known.
+//Output: { outcomes, failures } - one outcome per channel. Never throws for a channel failure.
+//Uses: errorMessage (lib/json.ts); each channel's suppress - ATTIO_DNC_CHANNEL (this file),
+//THIRD_PARTY_SUPPRESSION_CHANNELS (lib/providers.ts).
+//Workflow: interested workflow (recordInterestedLead) step 6 - suppression on every platform.
+//
+//One function, called by every interested workflow, because interest is a fact about the person and not about
+//the channel that found it: a lead who answers the phone must stop receiving the cold email sequence too, and
+//the reverse. Suppressing only the channel that happened to report first is how a lead ends up pitched twice.
 //
 //Which channels exist is not decided here - see THIRD_PARTY_SUPPRESSION_CHANNELS (lib/providers.ts). A new
 //outbound platform is appended there and is suppressed by this function from that moment, for every provider,
@@ -870,40 +976,36 @@ export function interestedDealName(companyName: string | null): string {
 //returned for the caller to report rather than raised, and no channel is retried.
 //A channel that reports "skipped" is not a failure - it means the lead is not present on that platform to
 //suppress, usually for want of the one identifier it works by.
-//FLOW: 1. the Attio DNC channel, then every registered third-party one. 2. each is run inside its own try, so
-//a throw becomes a recorded failure rather than an escaped one. 3. one summary line naming every outcome.
 //[DEBUG] Every channel logs its own result and the summary repeats them together, so a half-suppressed lead is
 //readable from one line rather than reconstructed from three.
-//USES: ATTIO_DNC_CHANNEL (this module), THIRD_PARTY_SUPPRESSION_CHANNELS (lib/providers.ts),
-//errorMessage (lib/json.ts).
 //---------------------------------------------------------------------------------------------------------
 export async function suppressInterestedLead(targets: SuppressionTargets): Promise<SuppressionResult> {
-  const channels = [ATTIO_DNC_CHANNEL, ...THIRD_PARTY_SUPPRESSION_CHANNELS];
-  const outcomes: SuppressionOutcome[] = [];
-  const failures: string[] = [];
+  const channels = [ATTIO_DNC_CHANNEL, ...THIRD_PARTY_SUPPRESSION_CHANNELS]; //attio DNC first, then the rest
+  const outcomes: SuppressionOutcome[] = []; //result per channel
+  const failures: string[] = []; //channels that threw
 
-  for (const channel of channels) {
+  for (const channel of channels) { //each platform in turn
     try {
-      const result = await channel.suppress(targets);
-      if (result.status === "skipped") {
-        console.log(`[suppress] ${channel.platform}: skipped - ${result.reason}`);
-        outcomes.push({ platform: channel.platform, status: "skipped", detail: result.reason });
-        continue;
+      const result = await channel.suppress(targets); //suppress the lead there
+      if (result.status === "skipped") { //lead not on that platform
+        console.log(`[suppress] ${channel.platform}: skipped - ${result.reason}`); //log the skip
+        outcomes.push({ platform: channel.platform, status: "skipped", detail: result.reason }); //record the skip
+        continue; //next channel
       }
-      console.log(`[suppress] ${channel.platform}: suppressed${result.detail ? ` - ${result.detail}` : ""}`);
-      outcomes.push({ platform: channel.platform, status: "suppressed", detail: result.detail ?? null });
+      console.log(`[suppress] ${channel.platform}: suppressed${result.detail ? ` - ${result.detail}` : ""}`); //log the success
+      outcomes.push({ platform: channel.platform, status: "suppressed", detail: result.detail ?? null }); //record the success
     } catch (error) {
-      const message = errorMessage(error);
-      failures.push(`${channel.platform}: ${message}`);
-      console.error(`[suppress] ${channel.platform}: FAILED - ${message}`);
-      outcomes.push({ platform: channel.platform, status: "failed", detail: message });
+      const message = errorMessage(error); //error as text
+      failures.push(`${channel.platform}: ${message}`); //remember the failure
+      console.error(`[suppress] ${channel.platform}: FAILED - ${message}`); //log the failure
+      outcomes.push({ platform: channel.platform, status: "failed", detail: message }); //record the failure
     }
   }
 
-  console.log(
+  console.log( //one summary line for every channel
     `[suppress] ${targets.personName}: ${outcomes.map((outcome) => `${outcome.platform} ${outcome.status}`).join(", ")}`,
   );
-  return { outcomes, failures };
+  return { outcomes, failures }; //every result, plus the failures
 }
 //#endregion
 
@@ -938,88 +1040,99 @@ export async function suppressInterestedLead(targets: SuppressionTargets): Promi
 
 //#region <duplicate window>
 //---------------------------------------------------------------------------------------------------------
+//Reads how long a repeat counts as a repeat, from INTERESTED_DUPLICATE_WINDOW_MS or the default.
+//Input: none.
+//Output: the window in milliseconds; 0 means the check is off.
+//Uses: tunableEnv, reportConfigValue (lib/env.ts).
+//Workflow: interested workflow (recordInterestedLead) step 0 - the window recentlyNoted checks against.
+//
 //[STABILITY] A malformed value falls back rather than throwing, matching budgetMs (lib/run-budget.ts): losing
 //the override is a tuning problem, losing the event is a data problem. Zero is honoured as "off", because
 //disabling the check is a legitimate thing to want and a negative number is not.
 //---------------------------------------------------------------------------------------------------------
 function duplicateWindowMs(): number {
-  const raw = tunableEnv(
+  const raw = tunableEnv( //the setting's raw text, if set
     "INTERESTED_DUPLICATE_WINDOW_MS",
     `using the ${DEFAULT_DUPLICATE_WINDOW_MS / 60_000}-minute default`,
   );
-  if (!raw) return DEFAULT_DUPLICATE_WINDOW_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    console.warn(
+  if (!raw) return DEFAULT_DUPLICATE_WINDOW_MS; //not set, use the default
+  const parsed = Number(raw); //text to number
+  if (!Number.isFinite(parsed) || parsed < 0) { //not a usable number
+    console.warn( //log the bad setting
       `[config] INTERESTED_DUPLICATE_WINDOW_MS is not a non-negative number (${JSON.stringify(raw)}) - using the ${DEFAULT_DUPLICATE_WINDOW_MS / 60_000}-minute default`,
     );
-    return DEFAULT_DUPLICATE_WINDOW_MS;
+    return DEFAULT_DUPLICATE_WINDOW_MS; //fall back to the default
   }
-  reportConfigValue("INTERESTED_DUPLICATE_WINDOW_MS", raw);
-  return parsed;
+  reportConfigValue("INTERESTED_DUPLICATE_WINDOW_MS", raw); //log the override in use
+  return parsed; //the configured window
 }
 //#endregion
 
 //#region <repeat check>
 //---------------------------------------------------------------------------------------------------------
-//Whether this person already carries `title` from inside the window.
-//FLOW: 1. window of zero -> the check is off, nothing is read. 2. list the person's notes. 3. match on title
-//and age. 4. a listing that could not be exhausted, or a read that failed, answers false.
+//Says whether this person already carries a note titled `title` from inside the duplicate window.
+//Input: person - the existing Attio person; title - this run's note title; nowMs - the current time.
+//Output: true if a matching recent note exists. Never throws.
+//Uses: duplicateWindowMs (this file); listNotes (lib/attio.ts); errorMessage (lib/json.ts).
+//Workflow: interested workflow (recordInterestedLead) step 0 - the repeat check.
 //
 //[STABILITY] FAILS OPEN, DELIBERATELY. A read error is swallowed and a truncated listing answers false,
 //because the cost of the two outcomes is not symmetric: a wrong "yes" silently discards a real interested
 //lead, which is the event this whole codebase exists to capture, while a wrong "no" writes a duplicate note -
 //the status quo, and visible. Neither is silent in the log.
-//USES: listNotes (lib/attio.ts), errorMessage (lib/json.ts).
 //---------------------------------------------------------------------------------------------------------
 async function recentlyNoted(person: AttioPerson, title: string, nowMs: number): Promise<boolean> {
-  const windowMs = duplicateWindowMs();
-  if (windowMs === 0) return false;
+  const windowMs = duplicateWindowMs(); //how far back counts
+  if (windowMs === 0) return false; //check is switched off
 
-  const personId = person.id.record_id;
+  const personId = person.id.record_id; //the person's attio id
   try {
-    const { notes, complete } = await listNotes("people", personId);
-    const floorMs = nowMs - windowMs;
-    const match = notes.find((note) => note.title === title && note.createdAtMs >= floorMs);
-    if (match) {
-      console.log(
+    const { notes, complete } = await listNotes("people", personId); //read the person's notes
+    const floorMs = nowMs - windowMs; //oldest time that still counts
+    const match = notes.find((note) => note.title === title && note.createdAtMs >= floorMs); //same title, recent enough
+    if (match) { //a repeat
+      console.log( //log the matching note
         `[dedupe] people ${personId}: ${JSON.stringify(title)} was already posted at ${new Date(match.createdAtMs).toISOString()}, inside the ${windowMs / 60_000}-minute window`,
       );
-      return true;
+      return true; //yes, it repeats
     }
-    if (!complete) {
-      console.warn(
+    if (!complete) { //could not read every note
+      console.warn( //log that we could not be sure
         `[dedupe] people ${personId}: the note listing could not be read to the end, so no repeat could be ruled out - proceeding, which risks a duplicate note rather than dropping the lead`,
       );
     }
-    return false;
+    return false; //not a repeat
   } catch (error) {
-    console.warn(
+    console.warn( //log the failed read
       `[dedupe] people ${personId}: the note listing could not be read, so no repeat could be ruled out - proceeding, which risks a duplicate note rather than dropping the lead. ${errorMessage(error)}`,
     );
-    return false;
+    return false; //fail open: treat as new
   }
 }
 
 //---------------------------------------------------------------------------------------------------------
-//The outcome a declined repeat returns: the records the first run left behind, and nothing written.
-//Returns null when the person carries no deal, which is not a state a completed run can leave - the deal is
-//created BEFORE the notes - so the note this matched cannot have come from one. Answering null there sends
-//the event down the normal path rather than inventing a deal id for it.
+//Base function. Builds the outcome a declined repeat returns: the first run's records, nothing written.
+//Input: person - the existing Attio person; personName - their display name.
+//Output: the outcome with duplicate true, or null when the person carries no deal.
+//Workflow: interested workflow (recordInterestedLead) step 0 - what a repeat returns instead of recording.
+//
+//A person with no deal is not a state a completed run can leave - the deal is created BEFORE the notes - so the
+//note this matched cannot have come from one. Answering null there sends the event down the normal path rather
+//than inventing a deal id for it.
 //[LOGIC] Suppression is reported empty rather than re-run. A repeat is not new information, and the channels
 //the first run failed on failed structurally, not transiently - see the KNOWN GAP in stopLeadInActiveCampaigns
 //(lib/heyreach.ts). Wanting repeats to retry suppression is a reason to widen this, not the note write.
 //---------------------------------------------------------------------------------------------------------
 function duplicateOutcome(person: AttioPerson, personName: string): InterestedOutcome | null {
-  const dealId = person.values.associated_deals[0]?.target_record_id ?? null;
-  if (!dealId) return null;
+  const dealId = person.values.associated_deals[0]?.target_record_id ?? null; //person's first deal, or null
+  if (!dealId) return null; //no deal, not a real repeat
   return {
-    personId: person.id.record_id,
-    personName,
-    dealId,
-    companyId: person.values.company[0]?.target_record_id ?? null,
-    suppression: { outcomes: [], failures: [] },
-    duplicate: true,
+    personId: person.id.record_id, //the existing person
+    personName, //same as personName: personName
+    dealId, //same as dealId: dealId
+    companyId: person.values.company[0]?.target_record_id ?? null, //their company, if any
+    suppression: { outcomes: [], failures: [] }, //suppression not re-run
+    duplicate: true, //mark it as a repeat
   };
 }
 //#endregion
@@ -1032,21 +1145,16 @@ function duplicateOutcome(person: AttioPerson, personName: string): InterestedOu
 
 //#region <shared workflow>
 //---------------------------------------------------------------------------------------------------------
-//Records an interested lead in Attio. Every provider's route or cron ends here, and this is the whole of what
-//they share - so a fourth platform needs an extractor, a lookup, and a note renderer, and inherits the rest.
+//Records an interested lead in Attio, and writes a transcript of the run onto the records it touched.
+//Input: workflow - the lead plus the provider's findPerson and history.
+//Output: the person, deal, company and suppression results. Throws if a step before suppression fails.
+//Uses: withRunLog (lib/run-log.ts); runInterestedLead (this file).
+//Workflow: the interested workflow itself - every provider's route or cron ends here (aircall-interested,
+//heyreach-interested, instantly-interested, outfound-interested). Steps 0-6 run in runInterestedLead; step 7
+//is the transcript this wrapper adds.
 //
-//FLOW:
-// 0. recentlyNoted - a person already carrying this run's note from inside the duplicate window means the
-//    event repeats one already recorded, and nothing at all is written. See "declining a repeat" above.
-// 1. Resolve the person by the provider's own lookup order, creating one from the lead when there is no match.
-// 2. resolveInterestedCompany - the company already linked to the person if there is one, else found by domain
-//    or name, else created. This runs BEFORE the deal because the deal is named after it.
-// 3. ensureInterestedDeal - reuses any deal already linked to the person whatever its stage, and only creates
-//    one when none exists, named strictly by interestedDealName.
-// 4. Note on the person and on the deal, carrying the provider's rendered history.
-// 5. updateAttioAttributes on the person and the deal - fills blanks only, save for lead source, which is
-//    restated to this run's channel whatever Attio already held. See ALWAYS_OVERWRITE.
-// 6. suppressInterestedLead - Attio DNC plus every registered outbound platform.
+//This is the whole of what the providers share - so a fourth platform needs an extractor, a lookup, and a note
+//renderer, and inherits the rest.
 //
 //ORDERING is deliberate. The company precedes the deal because it names it. The notes precede the attribute
 //writes because a note is the record of what happened and is worth having even if a later write fails. The
@@ -1059,10 +1167,6 @@ function duplicateOutcome(person: AttioPerson, personName: string): InterestedOu
 //Step 6 is the exception: it collects its own failures instead of raising, so one unreachable platform cannot
 //fail an event that Attio already recorded.
 //
-//USES: createPerson, personLabel, ensureInterestedDeal, defaultDealOwner, createNote (lib/attio.ts);
-//leadSourceLabel (lib/providers.ts); recentlyNoted, duplicateOutcome, resolveInterestedCompany,
-//interestedDealName, personValuesFor, dealValuesFor, updateAttioAttributes, suppressInterestedLead (this
-//module).
 //The caller supplies findPerson and history; nothing else about a provider is visible from here.
 //[DEBUG] Ends with one line naming the person, deal, and company, so an event reads as a single result.
 //[RUN LOG] Every block below marked `//debug note in attio=` belongs to the transcript written back to the
@@ -1075,11 +1179,23 @@ export async function recordInterestedLead(workflow: InterestedWorkflow): Promis
 }
 //===============
 
+//---------------------------------------------------------------------------------------------------------
+//Runs the interested workflow's steps 0-6 for one lead.
+//Input: workflow - the lead plus the provider's findPerson and history.
+//Output: the person, deal, company and suppression results; the existing records' ids for a declined repeat.
+//Throws if any Attio step before suppression fails.
+//Uses: leadSourceLabel (lib/providers.ts); personLabel, createPerson, recordDisplayName, ensureInterestedDeal,
+//defaultDealOwner, createNote (lib/attio.ts); runLogRecord (lib/run-log.ts); recentlyNoted, duplicateOutcome,
+//personValuesFor, resolveInterestedCompany, interestedDealName, dealValuesFor, updateAttioAttributes,
+//suppressInterestedLead (this file); workflow.findPerson and workflow.history (the provider).
+//Workflow: interested workflow (recordInterestedLead) steps 0-6 - the body recordInterestedLead wraps in a
+//transcript (step 7).
+//---------------------------------------------------------------------------------------------------------
 async function runInterestedLead(workflow: InterestedWorkflow): Promise<InterestedOutcome> {
-  const { lead, subject } = workflow;
-  const title = leadSourceLabel(lead.provider);
+  const { lead, subject } = workflow; //pull lead and subject out of workflow
+  const title = leadSourceLabel(lead.provider); //note title: the provider's lead-source label
 
-  let person = await workflow.findPerson();
+  let person = await workflow.findPerson(); //step 1: look the person up
   //debug note in attio=
   const personWasAlreadyThere = person !== null; //did Attio know this person before we started?
   //===============
@@ -1087,58 +1203,58 @@ async function runInterestedLead(workflow: InterestedWorkflow): Promise<Interest
   //deal, four writes and a suppression pass - and leaves no run transcript either, because nothing has been
   //registered with runLogRecord yet. A person who does not exist cannot carry a previous note, so a
   //first-time lead never pays for the check at all.
-  if (person) {
-    const existingName = personLabel(person);
-    if (await recentlyNoted(person, title, Date.now())) {
-      const outcome = duplicateOutcome(person, existingName);
-      if (outcome) {
-        console.log(
+  if (person) { //step 0: only an existing person can repeat
+    const existingName = personLabel(person); //their display name
+    if (await recentlyNoted(person, title, Date.now())) { //same note posted recently
+      const outcome = duplicateOutcome(person, existingName); //existing records, nothing written
+      if (outcome) { //they have a deal, so it's a true repeat
+        console.log( //log the declined repeat
           `[interested] ${subject}: declined - this repeats an event already recorded for ${existingName}, so nothing was written`,
         );
-        return outcome;
+        return outcome; //stop here, write nothing
       }
-      console.warn(
+      console.warn( //log the odd no-deal case
         `[interested] ${subject}: ${existingName} carries a recent ${JSON.stringify(title)} note but no deal, which no completed run leaves behind - recording the event normally`,
       );
     }
   }
-  if (!person) person = await createPerson(personValuesFor(lead));
-  const personId = person.id.record_id;
-  const personName = personLabel(person);
+  if (!person) person = await createPerson(personValuesFor(lead)); //step 1: create the person if missing
+  const personId = person.id.record_id; //the person's attio id
+  const personName = personLabel(person); //the person's display name
   //debug note in attio=
   runLogRecord("people", person, personWasAlreadyThere, personName); //take a photo of the person before we change them
   //===============
 
-  const company = await resolveInterestedCompany(lead, person);
-  const deal = await ensureInterestedDeal(
+  const company = await resolveInterestedCompany(lead, person); //step 2: find or create the company
+  const deal = await ensureInterestedDeal( //step 3: reuse or create the deal
     person,
     interestedDealName(company?.name ?? null),
     defaultDealOwner(),
     company?.id ?? null,
   );
-  const dealId = deal.id.record_id;
+  const dealId = deal.id.record_id; //the deal's attio id
   //debug note in attio=
   runLogRecord("deals", deal, person.values.associated_deals.length > 0, recordDisplayName(deal) ?? dealId); //take a photo of the deal before we change it
   //===============
 
-  const history = await workflow.history();
-  await createNote("people", personId, title, history, personName);
-  await createNote("deals", dealId, title, history);
+  const history = await workflow.history(); //step 4: the provider's rendered history
+  await createNote("people", personId, title, history, personName); //step 4: note on the person
+  await createNote("deals", dealId, title, history); //step 4: note on the deal
 
-  await updateAttioAttributes("people", person, personValuesFor(lead, company?.id ?? null), personName);
-  await updateAttioAttributes("deals", deal, dealValuesFor(lead));
+  await updateAttioAttributes("people", person, personValuesFor(lead, company?.id ?? null), personName); //step 5: fill person attributes
+  await updateAttioAttributes("deals", deal, dealValuesFor(lead)); //step 5: fill deal attributes
 
-  const suppression = await suppressInterestedLead({
-    personId,
-    personName,
-    email: lead.emails[0] ?? null,
-    profileUrl: lead.linkedin,
+  const suppression = await suppressInterestedLead({ //step 6: stop outreach everywhere
+    personId, //same as personId: personId
+    personName, //same as personName: personName
+    email: lead.emails[0] ?? null, //first email, if any
+    profileUrl: lead.linkedin, //linkedin url, if any
   });
 
-  console.log(
+  console.log( //one summary line for the event
     `[interested] ${subject}: completed - person ${personName}, deal ${dealId}, company ${company?.name ?? "none"}`,
   );
-  return { personId, personName, dealId, companyId: company?.id ?? null, suppression, duplicate: false };
+  return { personId, personName, dealId, companyId: company?.id ?? null, suppression, duplicate: false }; //the result
 }
 //#endregion
 
