@@ -12,7 +12,8 @@
 //The API is private and has no public documentation. It is written against the spec the deployment serves
 //itself, at https://api.outfound.io/openapi-client.json.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { credentialHint, OUTFOUND_BASE, outfoundAuthHeader } from "./endpoints.js";
 import {
@@ -24,9 +25,11 @@ import {
   stringValue,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 /** Outfound's own vocabulary. Only Sent and Received are traffic that happened; the rest have not, or failed. */
 export type OutfoundEmailType = "Sent" | "Received" | "Scheduled" | "PendingSend" | "Failed" | "unknown";
@@ -114,11 +117,13 @@ const THREAD_PAGE_LIMIT = 50;
 //something is wrong with the cursor rather than that the window is genuinely that wide.
 const MAX_THREAD_PAGES = 200;
 
+//#endregion
 //=============================================================================================================
 
-//parse outfound responses=====================================================================================
+//=============================================================================================================
+//#region <parse outfound responses>
 
-//#region <parse outfound responses: emails and threads>
+//#region <emails and threads>
 function parseEmailType(value: unknown): OutfoundEmailType {
   const text = stringValue(value);
   switch (text) {
@@ -172,11 +177,13 @@ export function parseOutfoundThread(value: unknown): OutfoundThread {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//outfound transport===========================================================================================
+//=============================================================================================================
+//#region <outfound transport>
 
-//#region <outfound transport: requests>
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every Outfound call. Nothing else in this module calls fetch.
 //FLOW: 1. prefix with OUTFOUND_BASE. 2. attach the bearer under any caller override. 3. parse the body.
@@ -211,11 +218,13 @@ async function outfoundFetch(path: string, options: RequestInit = {}): Promise<u
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read threads and emails======================================================================================
+//=============================================================================================================
+//#region <read threads and emails>
 
-//#region <read threads and emails: thread windows>
+//#region <thread windows>
 //---------------------------------------------------------------------------------------------------------
 //Every thread with activity in a window, paginated. Bodies are NOT included - see fetchOutfoundThreadEmails.
 //FLOW: 1. GET a page bounded by email_start_date/email_end_date. 2. parse items. 3. follow next_cursor until
@@ -290,7 +299,7 @@ export function outfoundNaiveUtc(ms: number): string {
 }
 //#endregion
 
-//#region <read threads and emails: thread messages>
+//#region <thread messages>
 //---------------------------------------------------------------------------------------------------------
 //Every message in one thread. The second half of every read: the inbox listing carries no bodies.
 //[PERF] One request per thread, which is what makes the touchpoint sync's cost scale with threads rather than
@@ -306,9 +315,11 @@ export async function fetchOutfoundThreadEmails(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read and suppress leads======================================================================================
+//=============================================================================================================
+//#region <read and suppress leads>
 
 //The lead record, and the DNC list.
 //
@@ -317,7 +328,7 @@ export async function fetchOutfoundThreadEmails(
 //recent conversations the note is rendered from - so the route pays one request where the Instantly route pays
 //two, and gets a richer record for it.
 
-//#region <read and suppress leads: parse lead records>
+//#region <parse lead records>
 function parseConversation(value: unknown): OutfoundConversation | null {
   if (!isJsonObject(value)) return null;
   const id = stringValue(value.id);
@@ -379,7 +390,7 @@ export function parseOutfoundLead(value: unknown): OutfoundLead {
 }
 //#endregion
 
-//#region <read and suppress leads: look up a lead>
+//#region <look up a lead>
 //---------------------------------------------------------------------------------------------------------
 //The lead behind an address, or null when Outfound holds none.
 //Unlike the Instantly equivalent this needs no exact-match guard: the endpoint is keyed on the address rather
@@ -427,7 +438,7 @@ function describeOutfoundLead(lead: OutfoundLead): string {
 }
 //#endregion
 
-//#region <read and suppress leads: do-not-contact list>
+//#region <do-not-contact list>
 //---------------------------------------------------------------------------------------------------------
 //Marks an address do-not-contact, so no connected sequencer mails it again.
 //Part of the suppression that runs for every interested lead whatever platform reported the interest - see
@@ -458,4 +469,5 @@ export async function markOutfoundThreadDnc(threadHash: string, email: string): 
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
