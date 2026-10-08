@@ -1,10 +1,13 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { optionalEnv, reportConfigValue, requiredEnv } from "./env.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export const ATTIO_BASE = "https://api.attio.com/v2";
 export const AIRCALL_BASE = "https://api.aircall.io/v1";
@@ -25,11 +28,13 @@ const CREDENTIAL_ENV_NAMES = {
 
 export type CredentialScope = keyof typeof CREDENTIAL_ENV_NAMES;
 
+//#endregion
 //=============================================================================================================
 
-//find service urls============================================================================================
+//=============================================================================================================
+//#region <find service urls>
 
-//#region <find service urls: supabase>
+//#region <supabase>
 export function supabaseBaseUrl(): string {
   const url = requiredEnv("SUPABASE_URL");
   reportConfigValue("SUPABASE_URL", url);
@@ -37,11 +42,13 @@ export function supabaseBaseUrl(): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//build request headers========================================================================================
+//=============================================================================================================
+//#region <build request headers>
 
-//#region <build request headers: keys read from env at call time, never hardcoded>
+//#region <keys read from env at call time, never hardcoded>
 export function attioHeaders(): HeadersInit {
   return {
     Authorization: `Bearer ${requiredEnv("ATTIO_API_KEY")}`,
@@ -86,14 +93,16 @@ export function supabaseHeaders(): HeadersInit {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//explain rejected credentials=================================================================================
+//=============================================================================================================
+//#region <explain rejected credentials>
 
 //A provider can only tell us a key is wrong by rejecting the request, so translate its 401/403 into the name of
 //the environment variable that has to change. Anything else is a data or permission problem, not a credential.
 
-//#region <explain rejected credentials: env variable hints>
+//#region <env variable hints>
 /**
  * Logs and returns a pointer to the environment variables behind a rejected request. Returns "" for statuses that
  * are not about credentials, so it can be appended to any error message unconditionally.
@@ -108,4 +117,5 @@ export function credentialHint(scope: CredentialScope, status: number): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
