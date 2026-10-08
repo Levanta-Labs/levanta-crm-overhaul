@@ -510,8 +510,8 @@ and the run is still a 200.
 is retried on a 429 for the same reason Attio retries POSTs: a refused request was not processed, so repeating it
 cannot withdraw a lead twice.
 
-**The all-or-nothing forms are kept for the interested routes.** `fetchInstantlyEmails`, `fetchHeyReachConversations`
-and `fetchAircallCalls` still raise rather than returning a partial read, because their caller writes one note once
+**The all-or-nothing forms are kept for the interested routes.** `fetchInstantlyEmails` and `fetchHeyReachConversations`
+still raise rather than returning a partial read, because their caller writes one note once
 and has no cursor to resume from — half a thread rendered as though it were the whole is a misleading note, not
 deferred work.
 
@@ -587,7 +587,7 @@ Aircall's `/calls` endpoint filters on a call's **creation** time. This sync pla
 **completion** time, because that is when a call becomes a countable touchpoint. The two
 do not coincide, and the gap between them is the call's duration.
 
-A call is therefore visible to the query from the moment it starts, but `fetchAircallCalls` discards it until it is
+A call is therefore visible to the query from the moment it starts, but `fetchAircallCallWindow` discards it until it is
 `done`. With a window only as wide as the completion window, a call lasting longer than that window was filtered out
 as unfinished on every run covering its start, then fell out of range before it ever looked finished - lost
 entirely. Longer cron intervals do not fix this; they only move the boundary.

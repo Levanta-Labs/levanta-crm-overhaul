@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { optionalEnv, requiredCsvEnv, requiredEnv } from "../../lib/env.js";
+import { optionalEnv, requiredEnv } from "../../lib/env.js";
 import { errorMessage, isJsonObject, responseJson } from "../../lib/json.js";
 
 const originalValue = process.env.TEST_ENV_VALUE;
@@ -19,11 +19,6 @@ describe("environment helpers", () => {
   test("rejects missing required values", () => {
     delete process.env.TEST_ENV_VALUE;
     expect(() => requiredEnv("TEST_ENV_VALUE")).toThrow("Missing required environment variable");
-  });
-
-  test("parses comma-separated configuration", () => {
-    process.env.TEST_ENV_VALUE = "Interested, Booked ,Qualified";
-    expect(requiredCsvEnv("TEST_ENV_VALUE")).toEqual(["Interested", "Booked", "Qualified"]);
   });
 });
 
