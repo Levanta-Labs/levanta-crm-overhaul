@@ -1,19 +1,24 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { optionalEnv } from "./env.js";
 import { errorMessage } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const BEARER = "Bearer ";
 
+//#endregion
 //=============================================================================================================
 
-//read requests and send responses=============================================================================
+//=============================================================================================================
+//#region <read requests and send responses>
 
-//#region <read requests and send responses: json bodies>
+//#region <json bodies>
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
 }
@@ -27,7 +32,7 @@ export async function requestJson(request: Request): Promise<unknown> {
 }
 //#endregion
 
-//#region <read requests and send responses: errors>
+//#region <errors>
 /** [DEBUG] Terminal catch for every route. Logs the raw error, returns only its message to the caller. */
 export function serverError(label: string, error: unknown): Response {
   console.error(label, error);
@@ -35,9 +40,11 @@ export function serverError(label: string, error: unknown): Response {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//wait out rate limits=========================================================================================
+//=============================================================================================================
+//#region <wait out rate limits>
 
 //Waiting out a rate limit, shared by every provider transport.
 //
@@ -52,7 +59,7 @@ export function serverError(label: string, error: unknown): Response {
 //why these two get a retry rather than a self-imposed cap like INSTANTLY_SYNC_PAGE_LIMIT, which exists only
 //because Instantly's 20-per-minute ceiling is documented as a hard number.
 
-//#region <wait out rate limits: wait times>
+//#region <wait times>
 /** A `Retry-After` in ms, when one is sent. Seconds or an HTTP date; anything else is ignored. */
 export function retryAfterMs(response: Response): number | null {
   const header = response.headers.get("retry-after");
@@ -84,14 +91,16 @@ export function rateLimitWaitMs(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//verify shared secrets========================================================================================
+//=============================================================================================================
+//#region <verify shared secrets>
 
 //Shared-secret verification. Both sides of the comparison are in this process, so a rejection can say exactly
 //why it failed. The secrets themselves are never logged - only their length and how the two values diverge.
 
-//#region <verify shared secrets: route gates>
+//#region <route gates>
 //---------------------------------------------------------------------------------------------------------
 //[SECURITY] Gate on all three cron routes. Called first in every GET, before any external request.
 //FLOW: 1. no CRON_SECRET configured -> reject; nothing can be verified. 2. no authorization header -> reject.
@@ -168,7 +177,7 @@ export function hasBodyToken(presented: string | null, envName: string): boolean
 }
 //#endregion
 
-//#region <verify shared secrets: compare values>
+//#region <compare values>
 function describeMismatch(presented: string, expected: string): string {
   if (presented.trim() === expected.trim()) return "they differ only by surrounding whitespace";
   if (presented.toLowerCase() === expected.toLowerCase()) return "they differ only by letter case";
@@ -197,4 +206,5 @@ function verifySecret(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
