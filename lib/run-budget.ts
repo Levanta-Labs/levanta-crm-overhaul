@@ -15,13 +15,16 @@
 //every event between them. The 300s default and the 240s budget suit the cadences in vercel.json; shortening a
 //cadence towards the budget requires lowering that sync's budget with it.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { reportConfigValue, tunableEnv } from "./env.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 //[PERF] The margin below maxDuration has to cover the slowest single event still in flight when the budget
 //expires (for a touchpoint, up to eight sequential Attio requests) plus the cursor save and the response.
@@ -35,11 +38,13 @@ export interface RunBudget {
   expired(): boolean;
 }
 
+//#endregion
 //=============================================================================================================
 
-//run budget===================================================================================================
+//=============================================================================================================
+//#region <run budget>
 
-//#region <run budget: read the budget setting>
+//#region <read the budget setting>
 //---------------------------------------------------------------------------------------------------------
 //Reads an optional per-sync override so a stuck backlog can be retuned without a redeploy.
 //[STABILITY] A malformed value falls back rather than throwing. Losing the override is a tuning problem;
@@ -60,7 +65,7 @@ function budgetMs(envName: string): number {
 }
 //#endregion
 
-//#region <run budget: start and report a budget>
+//#region <start and report a budget>
 //---------------------------------------------------------------------------------------------------------
 //Opens a budget measured from startedAtMs, which callers pass as the upperBoundMs they read at the top of the
 //handler - so the budget covers the provider fetch and any pagination too, not just the loop. A wide backlog
@@ -78,4 +83,5 @@ export function budgetSeconds(budget: RunBudget): number {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
