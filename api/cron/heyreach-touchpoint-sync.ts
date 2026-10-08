@@ -103,8 +103,6 @@ export async function GET(request: Request): Promise<Response> {
   //them by design - see the [PERF] note above, where a day-granular fetch re-reads every conversation touched
   //since UTC midnight - so the summary states it rather than leaving the shortfall to be inferred.
   let beforeCursorCount = 0; //messages already counted earlier
-  //Why the loop stopped early, if it did. Both reasons share one consequence - the cursor must NOT be parked
-  //at now - so they are one value rather than two flags that could disagree.
   //Why this run covered less than the whole window, if it did. Every reason shares one consequence - the
   //cursor must NOT be parked at now - so they are one value rather than flags that could disagree.
   //"window-throttled" is the FETCH stopping partway, which means the window itself is short and the records
@@ -241,7 +239,8 @@ export async function GET(request: Request): Promise<Response> {
 //HeyReach gives messages no ID of their own, so heyReachMessageId (lib/heyreach.ts) hashes the conversation
 //ID, timestamp, sender, subject, and body into one. Identical content in the same conversation at the same
 //instant collapses to one event, which is the correct outcome.
-//[PERF] Hashing is per message and the fetch returns whole days, so callers skip spent conversations first.
+//[PERF] Hashing is per message and the fetch returns whole days, so cost grows through the day. Skipping spent
+//conversations first would avoid most of it; deliberately not done - see the [PERF] note on GET.
 //---------------------------------------------------------------------------------------------------------
 export async function heyReachTouchpointEvents(
   conversations: readonly HeyReachConversation[],

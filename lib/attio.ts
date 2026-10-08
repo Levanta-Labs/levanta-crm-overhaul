@@ -60,13 +60,6 @@ export interface AttioPerson extends AttioRecord {
   };
 }
 
-//A person's name split into parts, as Attio takes it.
-export interface PersonNameInput {
-  readonly first_name: string; //given name
-  readonly last_name: string; //family name
-  readonly full_name: string; //whole name
-}
-
 //One note as the duplicate check needs it: what it is called and when it landed. Content is never read.
 export interface AttioNote {
   readonly id: string; //the note's id

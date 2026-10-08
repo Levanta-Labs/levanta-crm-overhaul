@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { fetchAircallCalls, formatCallDuration, parseAircallCall } from "../../lib/aircall.js";
+import { fetchAircallCallWindow, formatCallDuration, parseAircallCall } from "../../lib/aircall.js";
 import { toE164 } from "../../lib/phone.js";
 import {
   fetchHeyReachConversations,
@@ -145,7 +145,7 @@ describe("Aircall client", () => {
         : jsonResponse({ calls: [], meta: { next_page_link: null } }),
     );
     try {
-      expect(await fetchAircallCalls(1_699_999_000_000, 1_700_001_000_000)).toHaveLength(1);
+      expect((await fetchAircallCallWindow(1_699_999_000_000, 1_700_001_000_000)).calls).toHaveLength(1);
       expect(mock.calls).toHaveLength(2);
       expect(new Headers(mock.calls[0]?.init?.headers).get("authorization")).toBe("Basic aWQ6dG9rZW4=");
     } finally {

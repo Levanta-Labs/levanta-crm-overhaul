@@ -70,28 +70,6 @@ export function requiredEnv(name: string): string {
   }
   return value; //the value
 }
-
-//---------------------------------------------------------------------------------------------------------
-//Reads a required comma-separated variable as a list.
-//Input: name - the variable's name.
-//Output: the non-empty, trimmed items. Throws if the variable is missing or holds no items.
-//Uses: requiredEnv, reportOnce (this file).
-//Workflow: none in production - only the unit tests call it now.
-//---------------------------------------------------------------------------------------------------------
-export function requiredCsvEnv(name: string): readonly string[] {
-  const values = requiredEnv(name) //read it, throw if missing
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  if (values.length === 0) { //only commas and spaces
-    throw new Error(`Environment variable ${name} must contain at least one value`); //cannot run without one
-  }
-  reportOnce(`${name}:csv`, () => { //log the list, once
-    console.log(`[config] ${name} = ${values.length} value(s): ${JSON.stringify(values)}`); //count and items
-  });
-  return values; //the list
-}
 //#endregion
 
 //#endregion

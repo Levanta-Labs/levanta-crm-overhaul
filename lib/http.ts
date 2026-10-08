@@ -178,7 +178,7 @@ export function isAuthorizedCron(request: Request): boolean {
 //Uses: verifySecret (this file); optionalEnv (lib/env.ts).
 //Workflow: the Instantly, HeyReach and Outfound interested routes' auth check.
 //
-//[SECURITY] Both providers send a shared value in a custom x-webhook-secret header. Called before the request
+//[SECURITY] All three providers send a shared value in a custom x-webhook-secret header. Called before the request
 //body is read, so an unauthenticated caller never reaches a parser. Same three rejection branches as
 //isAuthorizedCron, for the same diagnostic reason.
 //---------------------------------------------------------------------------------------------------------

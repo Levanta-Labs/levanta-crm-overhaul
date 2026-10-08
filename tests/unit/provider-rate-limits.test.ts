@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GET as aircallSync } from "../../api/cron/aircall-touchpoint-sync.js";
 import { POST as heyReachInterested } from "../../api/heyreach-interested.js";
 import { GET as heyReachSync } from "../../api/cron/heyreach-touchpoint-sync.js";
-import {
-  AircallRateLimitError,
-  fetchAircallCallWindow,
-  fetchAircallCalls,
-} from "../../lib/aircall.js";
+import { fetchAircallCallWindow } from "../../lib/aircall.js";
 import {
   fetchHeyReachConversationWindow,
   fetchHeyReachConversations,
@@ -76,13 +72,6 @@ function cronRequest(path: string): Request {
 function cursorSaves(calls: readonly FetchCall[]): readonly FetchCall[] {
   return calls.filter((call) => call.input.includes("supabase.co") && call.init?.method === "POST");
 }
-
-//-------------------------------------------------------------------------------------------------------
-//A 429 with no Retry-After, which is what both providers were observed to send: probed live, each answered
-//200 carrying no rate-limit header at all, so the transports cannot count on one arriving with the refusal
-//either and must fall back to their own backoff.
-//-------------------------------------------------------------------------------------------------------
-const refused = () => jsonResponse(TOO_MANY, 429);
 
 describe("HeyReach under a rate limit", () => {
   test("retries a 429 before giving up on it", async () => {
@@ -235,15 +224,6 @@ describe("Aircall under a rate limit", () => {
       const window = await fetchAircallCallWindow(0, Date.now());
       expect(attempts).toBe(2);
       expect(window.stoppedBy).toBeNull();
-    } finally {
-      mock.restore();
-    }
-  });
-
-  test("the all-or-nothing form still raises, for callers with no cursor to resume from", async () => {
-    const mock = installFetchMock(refused);
-    try {
-      await expect(fetchAircallCalls(0, Date.now())).rejects.toBeInstanceOf(AircallRateLimitError);
     } finally {
       mock.restore();
     }

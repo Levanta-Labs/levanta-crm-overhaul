@@ -43,7 +43,7 @@ const SYNC_KEY = "aircall-touchpoints"; //cursor row name in supabase
 
 //[STABILITY] How far back the API window must reach BEYOND the cursor.
 //Aircall filters /calls on a call's creation time; this sync places calls on the timeline by ended_at. A call
-//is therefore visible to the query from the moment it starts, but is discarded by fetchAircallCalls until it
+//is therefore visible to the query from the moment it starts, but is discarded by fetchAircallCallWindow until it
 //is "done". Without this margin a call lasting longer than the window is filtered out on every run that covers
 //its start, then falls out of range before it ever appears finished - its touchpoint lost entirely.
 //[PERF] This widens every request; page count scales with it. Lower it if pagination becomes expensive, but

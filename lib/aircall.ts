@@ -373,21 +373,6 @@ export async function fetchAircallCallWindow(fromMs: number, toMs: number): Prom
     pagesRead, //same as pagesRead: pagesRead
   };
 }
-
-//---------------------------------------------------------------------------------------------------------
-//Reads a whole window or fails: no partial results.
-//Input: fromMs, toMs - the window, epoch milliseconds.
-//Output: every finished call. Throws AircallRateLimitError if Aircall refused partway.
-//Uses: fetchAircallCallWindow (this file).
-//Workflow: none in production - only the unit tests call it now. For a caller with no cursor to resume from.
-//---------------------------------------------------------------------------------------------------------
-export async function fetchAircallCalls(fromMs: number, toMs: number): Promise<readonly AircallCall[]> {
-  const { calls, stoppedBy } = await fetchAircallCallWindow(fromMs, toMs); //read the window
-  if (stoppedBy === "throttled") { //only part of it came back
-    throw new AircallRateLimitError(`only ${calls.length} call(s) of this window could be read`); //fail rather than return part
-  }
-  return calls; //the whole window
-}
 //#endregion
 
 //#region <single records>
