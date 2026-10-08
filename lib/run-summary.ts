@@ -15,7 +15,7 @@
 //=============================================================================================================
 //#region <import statements>
 
-import type { SyncCursor } from "./cursors.js";
+import type { SyncCursor } from "./cursors.js"; //the saved-progress mark type
 
 //#endregion
 //=============================================================================================================
@@ -25,6 +25,13 @@ import type { SyncCursor } from "./cursors.js";
 
 //#region <run outcome and cursor state>
 //---------------------------------------------------------------------------------------------------------
+//Base function. Says how the run ended, for the summary line.
+//Input: fatal - the error that ended the run, or null; stopped - why the loop stopped early, or null;
+//remaining - events left undone.
+//Output: "complete", "STOPPED (<reason>) with N left", or "ABANDONED on an error - <error>".
+//Workflow: all four touchpoint syncs (aircall, heyreach, instantly, outfound) - the closing "[run]" summary
+//line printed from the finally (step 9 on Instantly).
+//
 //[DEBUG] How the run ended.
 //`stopped` is null when the loop ran to the end, and otherwise the reason it stopped - "budget" or
 //"throttled". All four syncs can stop either way, so all four name which it was; the two want telling apart
@@ -33,22 +40,28 @@ import type { SyncCursor } from "./cursors.js";
 //reading - a stop only means "resume from here next run" once its cursor has actually reached Supabase.
 //---------------------------------------------------------------------------------------------------------
 export function runOutcome(fatal: string | null, stopped: string | null, remaining: number): string {
-  if (fatal) return `ABANDONED on an error - ${fatal}`;
-  if (!stopped) return "complete";
-  return `STOPPED (${stopped}) with ${remaining} left`;
+  if (fatal) return `ABANDONED on an error - ${fatal}`; //an error ended the run
+  if (!stopped) return "complete"; //the loop ran to the end
+  return `STOPPED (${stopped}) with ${remaining} left`; //stopped early, say why
 }
 
 //---------------------------------------------------------------------------------------------------------
+//Base function. Says where the cursor ended up and whether it was saved, for the summary line.
+//Input: cursor - the run's cursor, or null if never read; saved - whether it reached Supabase.
+//Output: a short sentence about the cursor.
+//Workflow: all four touchpoint syncs (aircall, heyreach, instantly, outfound) - the closing "[run]" summary
+//line printed from the finally (step 9 on Instantly).
+//
 //[DEBUG] Where the mark ended up, which is the difference between a run whose work will not be repeated and
 //one whose work will. An unsaved cursor is named as such rather than printed as a timestamp: a run that noted
 //forty touchpoints to Attio and then failed to persist its mark will note all forty again next run, and this
 //is the line that has to say so rather than printing a mark that was never stored.
 //---------------------------------------------------------------------------------------------------------
 export function cursorState(cursor: SyncCursor | null, saved: boolean): string {
-  if (!cursor) return "no cursor was ever read, so nothing was processed and nothing was saved";
-  const at = new Date(cursor.timestampMs).toISOString();
-  if (saved) return `cursor now ${at}`;
-  return `cursor NOT saved (it would have been ${at}) - the previous mark stands and this window is re-read next run`;
+  if (!cursor) return "no cursor was ever read, so nothing was processed and nothing was saved"; //run failed before reading it
+  const at = new Date(cursor.timestampMs).toISOString(); //the mark as a readable date
+  if (saved) return `cursor now ${at}`; //saved, report the new mark
+  return `cursor NOT saved (it would have been ${at}) - the previous mark stands and this window is re-read next run`; //not saved, warn
 }
 //#endregion
 

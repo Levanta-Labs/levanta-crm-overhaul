@@ -1,19 +1,19 @@
 //=============================================================================================================
 //#region <import statements>
 
-import { waitUntil } from "@vercel/functions";
-import {
+import { waitUntil } from "@vercel/functions"; //keeps the function alive for background work
+import { //aircall readers and the call-length formatter
   fetchAircallCall,
   fetchCampaignContact,
   formatCallDuration,
   type AircallCall,
   type AircallCampaignContact,
 } from "../lib/aircall.js";
-import { findPersonByEmail, findPersonByPhone } from "../lib/attio.js";
-import { hasBodyToken, json, requestJson, serverError } from "../lib/http.js";
-import { interestedLead, recordInterestedLead, type InterestedLead } from "../lib/interested.js";
-import { errorMessage, isJsonObject, numberValue, objectValue, stringValue } from "../lib/json.js";
-import { toE164 } from "../lib/phone.js";
+import { findPersonByEmail, findPersonByPhone } from "../lib/attio.js"; //attio person lookups
+import { hasBodyToken, json, requestJson, serverError } from "../lib/http.js"; //auth check and response helpers
+import { interestedLead, recordInterestedLead, type InterestedLead } from "../lib/interested.js"; //the shared interested workflow
+import { errorMessage, isJsonObject, numberValue, objectValue, stringValue } from "../lib/json.js"; //safe readers for unknown json
+import { toE164 } from "../lib/phone.js"; //phone number to "+15551234567" form
 
 //#endregion
 //=============================================================================================================
@@ -22,11 +22,11 @@ import { toE164 } from "../lib/phone.js";
 //#region <types and globals>
 
 //The one Aircall event this route acts on. Any other event is acknowledged and ignored.
-const OUTCOME_EVENT = "outbound_campaign.outcome_recorded";
+const OUTCOME_EVENT = "outbound_campaign.outcome_recorded"; //the event name to act on
 
 //Outcomes that count as interested, matched by ID so a rename in Aircall cannot break the match.
 //Names as of 2026-10-07, from GET /v1/campaign_outcomes.
-const INTERESTED_OUTCOME_IDS: ReadonlySet<string> = new Set([
+const INTERESTED_OUTCOME_IDS: ReadonlySet<string> = new Set([ //ids of the interested outcomes
   "019fd21c-357f-7c2a-b061-3b8b04a0146e", //Booked
   "019fd21c-5b09-70fc-9356-cfd01be98477", //Connected
   "019fd77c-37b0-7a87-9565-47e77576c25b", //Referral
@@ -47,6 +47,7 @@ export interface AircallOutcomeWebhook {
   readonly outcome: AircallOutcomeEvent | null; //null if any required field is missing
 }
 
+//One flat view of the call and its contact, ready to map to a lead.
 export interface AircallInterestedFields {
   readonly email: string | null; //campaign contact's email, else the call contact's
   readonly phones: readonly string[]; //the dialled number first, then any others. All E.164
@@ -68,39 +69,40 @@ export interface AircallInterestedFields {
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Aircall POSTs here for every outcome recorded on any campaign.
-//FLOW:
-// 1. parse the body - the token is inside it, so it has to be read before it can be checked.
-// 2. hasBodyToken (lib/http.ts) - reject anything not from our webhook.
-// 3. ignore any event that is not outcome_recorded.
-// 4. ignore an outcome event missing the fields the workflow needs.
-// 5. ignore any outcome that is not Booked, Connected or Referral - most events stop here.
-// 6. reply 200 at once, and run handleInterestedOutcome in the background with waitUntil.
+//Input: request - the incoming HTTP request from Aircall.
+//Output: 401 if the token is wrong; 200 for ignored or accepted events; 500 if the body is not a JSON object.
+//Uses: parseAircallOutcomeWebhook, isInterestedOutcome, handleInterestedOutcome (this file); hasBodyToken,
+//json, requestJson, serverError (lib/http.ts).
+//Workflow: aircall-interested webhook - the entry point. Steps 1-6 are marked inline; step 6 starts the
+//background job that records the lead.
+//
+//The token is inside the body, so the body has to be read before it can be checked.
 //[STABILITY] Steps 1-5 make no network call, so the reply is always inside Aircall's 5-second limit. A reply
 //outside it counts as a failure; enough of them and Aircall disables the webhook.
 //---------------------------------------------------------------------------------------------------------
 export async function POST(request: Request): Promise<Response> {
   try {
-    const webhook = parseAircallOutcomeWebhook(await requestJson(request)); //read the body; the token is inside
-    if (!hasBodyToken(webhook.token, "AIRCALL_WEBHOOK_TOKEN")) return json({ error: "Unauthorized" }, 401); //not ours
+    const webhook = parseAircallOutcomeWebhook(await requestJson(request)); //step 1: read the body; the token is inside
+    if (!hasBodyToken(webhook.token, "AIRCALL_WEBHOOK_TOKEN")) return json({ error: "Unauthorized" }, 401); //step 2: not ours
 
-    if (webhook.event !== OUTCOME_EVENT) {
+    if (webhook.event !== OUTCOME_EVENT) { //step 3: not an outcome event
       console.log(`[route] aircall-interested: ignored ${JSON.stringify(webhook.event)} - only ${OUTCOME_EVENT} is handled`); //wrong event
       return json({ ignored: true, reason: "not an outcome event" }); //200, so Aircall does not resend
     }
 
     const outcome = webhook.outcome; //null when fields were missing
-    if (!outcome) {
+    if (!outcome) { //step 4: required fields missing
       console.error(`[route] aircall-interested: rejected - an outcome event without call_id, campaign_id or outcome_id`); //payload changed?
       return json({ ignored: true, reason: "outcome event missing call_id, campaign_id or outcome_id" }); //200: a resend would be identical
     }
 
-    if (!isInterestedOutcome(outcome.outcomeId)) {
+    if (!isInterestedOutcome(outcome.outcomeId)) { //step 5: not Booked, Connected or Referral
       console.log(`[route] aircall-interested: ignored ${JSON.stringify(outcome.outcomeLabel)} on call ${outcome.callId}`); //e.g. "No Answer"
       return json({ ignored: true, reason: "not an interested outcome" }); //most events end here
     }
 
     console.log(`[route] aircall-interested: handling ${JSON.stringify(outcome.outcomeLabel)} on call ${outcome.callId} in the background`); //before the reply
-    waitUntil(handleInterestedOutcome(outcome)); //start the work, keep the function alive for it
+    waitUntil(handleInterestedOutcome(outcome)); //step 6: start the work, keep the function alive
     return json({ accepted: true, callId: outcome.callId }); //reply immediately
   } catch (error) {
     return serverError("Aircall interested webhook error", error); //body was not JSON, or not an object
@@ -114,7 +116,12 @@ export async function POST(request: Request): Promise<Response> {
 //#region <read the webhook>
 
 //#region <parse and filter>
-//Reads the webhook body. Throws only when it is not an object; anything missing becomes null.
+//---------------------------------------------------------------------------------------------------------
+//Base function. Reads the webhook body into the fields this route needs.
+//Input: value - the parsed JSON body, unknown shape.
+//Output: { token, event, outcome }; anything missing becomes null. Throws only when it is not an object.
+//Workflow: aircall-interested webhook step 1 - reads the body, including the token. Also called by unit tests.
+//---------------------------------------------------------------------------------------------------------
 export function parseAircallOutcomeWebhook(value: unknown): AircallOutcomeWebhook {
   if (!isJsonObject(value)) throw new Error("Aircall webhook payload must be an object"); //not a webhook at all
   const token = stringValue(value.token); //Aircall's secret for this webhook
@@ -123,14 +130,19 @@ export function parseAircallOutcomeWebhook(value: unknown): AircallOutcomeWebhoo
   const callId = numberValue(data?.call_id); //the call the outcome is on
   const campaignId = stringValue(data?.campaign_id); //the call's campaign
   const outcomeId = stringValue(data?.outcome_id); //which outcome was picked
-  if (callId === null || campaignId === null || outcomeId === null) {
+  if (callId === null || campaignId === null || outcomeId === null) { //any required field missing
     return { token, event, outcome: null }; //not a usable outcome
   }
   const outcomeLabel = stringValue(data?.outcome_label); //e.g. "Booked"
   return { token, event, outcome: { callId, campaignId, outcomeId, outcomeLabel } }; //everything the workflow needs
 }
 
-//Whether an outcome counts as interested.
+//---------------------------------------------------------------------------------------------------------
+//Base function. Says whether an outcome counts as interested.
+//Input: outcomeId - the outcome's UUID from the webhook.
+//Output: true for Booked, Connected or Referral; false otherwise.
+//Workflow: aircall-interested webhook step 5 - drops every non-interested outcome. Also called by unit tests.
+//---------------------------------------------------------------------------------------------------------
 export function isInterestedOutcome(outcomeId: string): boolean {
   return INTERESTED_OUTCOME_IDS.has(outcomeId); //true for Booked, Connected, Referral
 }
@@ -144,62 +156,82 @@ export function isInterestedOutcome(outcomeId: string): boolean {
 
 //#region <background job>
 //---------------------------------------------------------------------------------------------------------
-//Records one interested outcome in Attio. Runs AFTER the reply (see waitUntil in POST), so it must never
-//throw - there is no caller left to catch it. Every failure is logged instead.
-//FLOW: 1. read the call. 2. read its campaign contact (best-effort). 3. flatten both. 4. stop if there is no
-//email and no phone. 5. recordInterestedLead (lib/interested.ts), the sequence every provider runs.
+//Records one interested outcome in Attio, in the background after the reply.
+//Input: outcome - the parsed outcome event (call, campaign, outcome).
+//Output: nothing. Never throws; every failure is logged instead.
+//Uses: readCampaignContact, extractAircallFields, aircallLead, buildCallHistorySummary (this file);
+//fetchAircallCall (lib/aircall.ts); findPersonByEmail, findPersonByPhone (lib/attio.ts); recordInterestedLead
+//(lib/interested.ts); errorMessage (lib/json.ts); toE164 (lib/phone.ts).
+//Workflow: aircall-interested webhook step 6 - the background job. Its own steps 1-5 are marked inline.
+//
+//Runs AFTER the reply (see waitUntil in POST), so it must never throw - there is no caller left to catch it.
 //---------------------------------------------------------------------------------------------------------
 async function handleInterestedOutcome(outcome: AircallOutcomeEvent): Promise<void> {
   const label = `[route] aircall-interested: call ${outcome.callId}`; //prefix for every log line
   try {
-    const call = await fetchAircallCall(outcome.callId); //who was dialled, and when
-    const contact = await readCampaignContact(outcome.campaignId, toE164(call.rawDigits)); //name, email, company
-    const fields = extractAircallFields(call, contact, outcome.outcomeLabel); //one flat view of both
+    const call = await fetchAircallCall(outcome.callId); //step 1: who was dialled, and when
+    const contact = await readCampaignContact(outcome.campaignId, toE164(call.rawDigits)); //step 2: name, email, company
+    const fields = extractAircallFields(call, contact, outcome.outcomeLabel); //step 3: one flat view of both
     const phone = fields.phones[0] ?? null; //the dialled number leads
-    if (!fields.email && !phone) {
+    if (!fields.email && !phone) { //step 4: nothing to identify the person
       console.warn(`${label}: rejected - neither an email nor a phone number, so no person can be matched or created`); //nothing to match on
       return; //write nothing
     }
 
-    const result = await recordInterestedLead({
+    const result = await recordInterestedLead({ //step 5: the shared interested workflow
       lead: aircallLead(fields), //the lead to record
       subject: `aircall call ${call.id}`, //names this run in the logs
       //Email first, as the stronger identifier; the dialled number is the fallback.
-      findPerson: async () => (await findPersonByEmail(fields.email)) ?? (await findPersonByPhone(phone)),
+      findPerson: async () => (await findPersonByEmail(fields.email)) ?? (await findPersonByPhone(phone)), //how to find the existing person
       //The history is the call itself - nothing more to fetch.
-      history: async () => buildCallHistorySummary(fields),
+      history: async () => buildCallHistorySummary(fields), //the note body
     });
-    if (result.duplicate) {
+    if (result.duplicate) { //already recorded recently
       console.log(`${label}: declined as a repeat of an event already recorded`); //dedupe caught it
       return; //nothing written
     }
-    console.log(
+    console.log( //the success line to look for in Vercel logs
       `${label}: completed - person ${result.personId}, deal ${result.dealId}, ${result.suppression.failures.length} platform(s) failed to suppress`,
-    ); //the success line to look for in Vercel logs
+    );
   } catch (error) {
-    console.error(
+    console.error( //the one place a lost lead shows up
       `${label}: FAILED after Aircall was told OK, so it will not be resent. Recover it from GET /v1/campaigns/${outcome.campaignId}/call_outcomes if needed - ${errorMessage(error)}`,
-    ); //the one place a lost lead shows up
+    );
   }
 }
 //#endregion
 
 //#region <gather call details>
-//Reads the campaign contact for the dialled number. Never throws: the call alone is enough to record the lead.
+//---------------------------------------------------------------------------------------------------------
+//Reads the campaign contact for the dialled number, without ever failing.
+//Input: campaignId - the campaign's UUID; phone - the dialled number, E.164, or null.
+//Output: the contact, or null when there is no number, no such contact, or the lookup failed.
+//Uses: fetchCampaignContact (lib/aircall.ts); errorMessage (lib/json.ts).
+//Workflow: aircall-interested background job step 2 - the lead's name, email and company.
+//
+//Never throws: the call alone is enough to record the lead.
+//---------------------------------------------------------------------------------------------------------
 async function readCampaignContact(campaignId: string, phone: string | null): Promise<AircallCampaignContact | null> {
   if (!phone) return null; //no number, nothing to look up
   try {
     return await fetchCampaignContact(campaignId, phone); //null when the campaign has no such contact
   } catch (error) {
-    console.warn(
+    console.warn( //log and carry on
       `[route] aircall-interested: campaign contact lookup for ${phone} failed, so only the call's own fields are used - ${errorMessage(error)}`,
-    ); //log and carry on
+    );
     return null; //record the lead without it
   }
 }
 
-//Flattens the call and its campaign contact into one set of fields. The campaign contact wins; the call's own
-//address-book contact is the fallback.
+//---------------------------------------------------------------------------------------------------------
+//Flattens the call and its campaign contact into one set of fields.
+//Input: call - the Aircall call; contact - its campaign contact, or null; outcomeLabel - the outcome's name.
+//Output: the flat AircallInterestedFields.
+//Uses: toE164 (lib/phone.ts).
+//Workflow: aircall-interested background job step 3 - one flat view of both sources. Also called by unit tests.
+//
+//The campaign contact wins; the call's own address-book contact is the fallback.
+//---------------------------------------------------------------------------------------------------------
 export function extractAircallFields(
   call: AircallCall,
   contact: AircallCampaignContact | null,
@@ -224,23 +256,38 @@ export function extractAircallFields(
 //#endregion
 
 //#region <shape for attio>
-//The lead as the shared workflow sees it. Aircall has no LinkedIn, job title, industry, headcount or revenue,
-//so those stay null and are simply not written.
+//---------------------------------------------------------------------------------------------------------
+//Turns the flat call fields into the lead the shared workflow records.
+//Input: fields - the flattened call and contact.
+//Output: the InterestedLead, tagged as from "aircall".
+//Uses: interestedLead (lib/interested.ts).
+//Workflow: aircall-interested background job step 5 - the lead handed to recordInterestedLead.
+//
+//Aircall has no LinkedIn, job title, industry, headcount or revenue, so those stay null and are simply not
+//written.
+//---------------------------------------------------------------------------------------------------------
 export function aircallLead(fields: AircallInterestedFields): InterestedLead {
-  return interestedLead("aircall", {
+  return interestedLead("aircall", { //build the lead, source "aircall"
     emails: fields.email ? [fields.email] : [], //list of one, or empty
     phones: fields.phones, //all known numbers
-    firstName: fields.firstName,
-    lastName: fields.lastName,
-    companyName: fields.companyName,
+    firstName: fields.firstName, //contact's first name
+    lastName: fields.lastName, //contact's last name
+    companyName: fields.companyName, //contact's company
     description: fields.note, //the contact's note becomes the description
     occurredAtMs: fields.occurredAt * 1_000, //seconds to milliseconds
   });
 }
 
-//The note written to the Person and the Deal: what the call was and how it ended.
+//---------------------------------------------------------------------------------------------------------
+//Writes the note for the Person and the Deal: what the call was and how it ended.
+//Input: fields - the flattened call and contact.
+//Output: the note text, one line per detail.
+//Uses: formatCallDuration (lib/aircall.ts).
+//Workflow: aircall-interested background job step 5 - the history note recordInterestedLead writes (its
+//step 4). Also called by unit tests.
+//---------------------------------------------------------------------------------------------------------
 export function buildCallHistorySummary(fields: AircallInterestedFields): string {
-  return [
+  return [ //list the lines, then join them
     `**Aircall interaction — ${new Date(fields.occurredAt * 1_000).toISOString()}**`, //heading with the call time
     `- Direction: ${fields.direction ?? "unknown"}`, //inbound or outbound
     `- Duration: ${formatCallDuration(fields.duration)}`, //e.g. "1m 35s"
