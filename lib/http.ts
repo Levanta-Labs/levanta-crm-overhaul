@@ -1,8 +1,8 @@
 //=============================================================================================================
 //#region <import statements>
 
-import { optionalEnv } from "./env.js";
-import { errorMessage } from "./json.js";
+import { optionalEnv } from "./env.js"; //read an env variable, null if missing
+import { errorMessage } from "./json.js"; //readable message from any error
 
 //#endregion
 //=============================================================================================================
@@ -10,7 +10,8 @@ import { errorMessage } from "./json.js";
 //=============================================================================================================
 //#region <types and globals>
 
-const BEARER = "Bearer ";
+//The prefix on a cron request's authorization header.
+const BEARER = "Bearer "; //text before the secret
 
 //#endregion
 //=============================================================================================================
@@ -19,24 +20,44 @@ const BEARER = "Bearer ";
 //#region <read requests and send responses>
 
 //#region <json bodies>
+//---------------------------------------------------------------------------------------------------------
+//Base function. Builds a JSON HTTP response.
+//Input: data - what to send back; status - the HTTP status code (default 200).
+//Output: the Response.
+//Workflow: every route's reply - the four interested webhooks and the four cron syncs - plus serverError.
+//---------------------------------------------------------------------------------------------------------
 export function json(data: unknown, status = 200): Response {
-  return Response.json(data, { status });
+  return Response.json(data, { status }); //data as json with that status
 }
 
+//---------------------------------------------------------------------------------------------------------
+//Base function. Reads an incoming request's body as JSON.
+//Input: request - the incoming HTTP request.
+//Output: the parsed body. Throws if it is not valid JSON.
+//Workflow: the four interested webhook routes - reads the webhook payload after the auth check.
+//---------------------------------------------------------------------------------------------------------
 export async function requestJson(request: Request): Promise<unknown> {
   try {
-    return (await request.json()) as unknown;
+    return (await request.json()) as unknown; //parse the body
   } catch {
-    throw new Error("Request body must be valid JSON");
+    throw new Error("Request body must be valid JSON"); //bad body: clear message
   }
 }
 //#endregion
 
 //#region <errors>
-/** [DEBUG] Terminal catch for every route. Logs the raw error, returns only its message to the caller. */
+//---------------------------------------------------------------------------------------------------------
+//Logs an error and turns it into a 500 response.
+//Input: label - log prefix naming the route; error - whatever was thrown.
+//Output: a 500 response carrying { error: message }.
+//Uses: json (this file); errorMessage (lib/json.ts).
+//Workflow: the final catch of every route - the four interested webhooks and the four cron syncs.
+//
+//[DEBUG] Logs the raw error, returns only its message to the caller.
+//---------------------------------------------------------------------------------------------------------
 export function serverError(label: string, error: unknown): Response {
-  console.error(label, error);
-  return json({ error: errorMessage(error) }, 500);
+  console.error(label, error); //full error to the logs
+  return json({ error: errorMessage(error) }, 500); //only the message to the caller
 }
 //#endregion
 
@@ -60,18 +81,31 @@ export function serverError(label: string, error: unknown): Response {
 //because Instantly's 20-per-minute ceiling is documented as a hard number.
 
 //#region <wait times>
-/** A `Retry-After` in ms, when one is sent. Seconds or an HTTP date; anything else is ignored. */
+//---------------------------------------------------------------------------------------------------------
+//Base function. Reads the standard Retry-After header.
+//Input: response - a refused (usually 429) response.
+//Output: milliseconds to wait, or null when there is no usable header.
+//Workflow: attioFetch (lib/attio.ts) and rateLimitWaitMs - the first wait hint tried after a 429.
+//
+//Accepts seconds or an HTTP date; anything else is ignored.
+//---------------------------------------------------------------------------------------------------------
 export function retryAfterMs(response: Response): number | null {
-  const header = response.headers.get("retry-after");
-  if (!header) return null;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const date = Date.parse(header);
-  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+  const header = response.headers.get("retry-after"); //the header text, if sent
+  if (!header) return null; //no hint given
+  const seconds = Number(header); //try it as a number of seconds
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000; //seconds -> milliseconds
+  const date = Date.parse(header); //else try it as a date
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null; //time until that date, or null
 }
 
 //---------------------------------------------------------------------------------------------------------
-//How long to wait before attempt `attempt` + 1, given what the response said.
+//Decides how long to wait before the next try after a 429.
+//Input: response - the refused response; attempt - which try just failed (1, 2, ...); baseMs - first backoff
+//wait; maxMs - the longest wait allowed; hintMs - the provider's own reset reading, or null.
+//Output: milliseconds to wait, between 0 and maxMs.
+//Uses: retryAfterMs (this file).
+//Workflow: aircallFetch (lib/aircall.ts) and heyreachFetch (lib/heyreach.ts) - the wait between 429 retries.
+//
 //`hintMs` is a provider-specific reading of its own reset header, tried after Retry-After and before the
 //backoff. Doubling per attempt: baseMs, 2x, 4x.
 //[STABILITY] Capped at `maxMs`. A provider that answers with a reset a full minute out would otherwise park a
@@ -85,9 +119,9 @@ export function rateLimitWaitMs(
   maxMs: number,
   hintMs: number | null = null,
 ): number {
-  const stated = retryAfterMs(response) ?? hintMs;
-  const wait = stated ?? baseMs * 2 ** (attempt - 1);
-  return Math.min(Math.max(0, wait), maxMs);
+  const stated = retryAfterMs(response) ?? hintMs; //what the provider said, if anything
+  const wait = stated ?? baseMs * 2 ** (attempt - 1); //else double the wait each attempt
+  return Math.min(Math.max(0, wait), maxMs); //keep it between 0 and maxMs
 }
 //#endregion
 
@@ -102,92 +136,124 @@ export function rateLimitWaitMs(
 
 //#region <route gates>
 //---------------------------------------------------------------------------------------------------------
-//[SECURITY] Gate on all three cron routes. Called first in every GET, before any external request.
-//FLOW: 1. no CRON_SECRET configured -> reject; nothing can be verified. 2. no authorization header -> reject.
-//3. not "Bearer <secret>" -> reject. 4. otherwise compare against the configured value.
-//Each branch is distinct because the four failures need different fixes, and a bare 401 names none of them.
+//Checks a cron request carries "Bearer <CRON_SECRET>".
+//Input: request - the incoming cron request.
+//Output: true if authorized; false (with a logged reason) otherwise.
+//Uses: verifySecret (this file); optionalEnv (lib/env.ts).
+//Workflow: every cron sync route's auth check (aircall, instantly, heyreach, outfound) - called first in every
+//GET, before any external request.
+//
+//[SECURITY] Each branch is distinct because the four failures need different fixes, and a bare 401 names none
+//of them.
 //[DEBUG] Rejections log the reason and how the two values diverge - never either value.
 //---------------------------------------------------------------------------------------------------------
 export function isAuthorizedCron(request: Request): boolean {
-  const secret = optionalEnv("CRON_SECRET");
-  if (secret === null) {
-    console.warn(
+  const secret = optionalEnv("CRON_SECRET"); //the configured secret, or null
+  if (secret === null) { //nothing to compare against
+    console.warn( //explain how to configure it
       "[auth] cron: rejected - CRON_SECRET is not configured on this deployment, so no request can be verified. Vercel only attaches the authorization header once CRON_SECRET exists in the project's environment variables, and a redeploy is required after adding it.",
     );
-    return false;
+    return false; //reject
   }
-  const header = request.headers.get("authorization");
-  if (header === null) {
-    console.warn(
+  const header = request.headers.get("authorization"); //the request's auth header
+  if (header === null) { //request sent no header
+    console.warn( //say the header is missing
       `[auth] cron: rejected - the request carried no authorization header, though CRON_SECRET is configured (${secret.length} chars). A non-Vercel caller must send it explicitly.`,
     );
-    return false;
+    return false; //reject
   }
-  if (!header.startsWith(BEARER)) {
-    console.warn(
+  if (!header.startsWith(BEARER)) { //wrong format
+    console.warn( //say the format is wrong
       `[auth] cron: rejected - the authorization header is not in "Bearer <secret>" form, which is how Vercel sends CRON_SECRET`,
     );
-    return false;
+    return false; //reject
   }
-  return verifySecret("cron", "CRON_SECRET", "the authorization header", header.slice(BEARER.length), secret);
+  return verifySecret("cron", "CRON_SECRET", "the authorization header", header.slice(BEARER.length), secret); //compare the part after "Bearer "
 }
 
-/**
- * [SECURITY] Gate on the Instantly and HeyReach webhook routes. Both providers send a shared value in a custom
- * x-webhook-secret header. Called before the request body is read, so an unauthenticated caller never reaches
- * a parser. Same three rejection branches as isAuthorizedCron, for the same diagnostic reason.
- */
+//---------------------------------------------------------------------------------------------------------
+//Checks a webhook's x-webhook-secret header matches the configured secret.
+//Input: request - the incoming webhook; envName - the env variable holding the expected secret.
+//Output: true if authorized; false (with a logged reason) otherwise.
+//Uses: verifySecret (this file); optionalEnv (lib/env.ts).
+//Workflow: the Instantly, HeyReach and Outfound interested routes' auth check.
+//
+//[SECURITY] Both providers send a shared value in a custom x-webhook-secret header. Called before the request
+//body is read, so an unauthenticated caller never reaches a parser. Same three rejection branches as
+//isAuthorizedCron, for the same diagnostic reason.
+//---------------------------------------------------------------------------------------------------------
 export function hasWebhookSecret(request: Request, envName: string): boolean {
-  const secret = optionalEnv(envName);
-  if (secret === null) {
-    console.warn(
+  const secret = optionalEnv(envName); //the configured secret, or null
+  if (secret === null) { //nothing to compare against
+    console.warn( //explain how to configure it
       `[auth] ${envName}: rejected - ${envName} is not configured on this deployment, so no webhook can be verified. Add it in Vercel and configure the sender to send the same value.`,
     );
-    return false;
+    return false; //reject
   }
-  const header = request.headers.get("x-webhook-secret");
-  if (header === null) {
-    console.warn(
+  const header = request.headers.get("x-webhook-secret"); //the secret the sender sent
+  if (header === null) { //sender sent no header
+    console.warn( //say the header is missing
       `[auth] ${envName}: rejected - the request carried no x-webhook-secret header, though ${envName} is configured (${secret.length} chars). Check the sender's custom-header configuration.`,
     );
-    return false;
+    return false; //reject
   }
-  return verifySecret(envName, envName, "the x-webhook-secret header", header, secret);
+  return verifySecret(envName, envName, "the x-webhook-secret header", header, secret); //compare, log the result
 }
 
-/**
- * [SECURITY] Gate on webhooks that carry their secret inside the JSON body rather than a header - Aircall puts
- * it in a `token` field. Same rejection branches as hasWebhookSecret, for the same diagnostic reason.
- */
+//---------------------------------------------------------------------------------------------------------
+//Checks a token taken from a webhook's JSON body matches the configured secret.
+//Input: presented - the token from the body, or null; envName - the env variable holding the expected token.
+//Output: true if authorized; false (with a logged reason) otherwise.
+//Uses: verifySecret (this file); optionalEnv (lib/env.ts).
+//Workflow: the Aircall interested route's auth check - Aircall puts the secret in a `token` field.
+//
+//[SECURITY] For webhooks that carry their secret inside the JSON body rather than a header. Same rejection
+//branches as hasWebhookSecret, for the same diagnostic reason.
+//---------------------------------------------------------------------------------------------------------
 export function hasBodyToken(presented: string | null, envName: string): boolean {
   const secret = optionalEnv(envName); //the configured token, or null
-  if (secret === null) {
-    console.warn(
+  if (secret === null) { //nothing to compare against
+    console.warn( //explain it is not configured
       `[auth] ${envName}: rejected - ${envName} is not configured on this deployment, so no webhook can be verified.`,
     ); //nothing to compare against
-    return false;
+    return false; //reject
   }
-  if (presented === null) {
-    console.warn(
+  if (presented === null) { //body had no token
+    console.warn( //say the token is missing
       `[auth] ${envName}: rejected - the body carried no token field, though ${envName} is configured (${secret.length} chars).`,
     ); //request had no token
-    return false;
+    return false; //reject
   }
   return verifySecret(envName, envName, "the body's token field", presented, secret); //compare, log the result
 }
 //#endregion
 
 //#region <compare values>
+//---------------------------------------------------------------------------------------------------------
+//Base function. Says how two non-matching secrets differ, without revealing either.
+//Input: presented - what the request sent; expected - the configured value.
+//Output: a short reason, e.g. "they differ only by letter case".
+//Workflow: verifySecret - the reason in a rejection log line.
+//---------------------------------------------------------------------------------------------------------
 function describeMismatch(presented: string, expected: string): string {
-  if (presented.trim() === expected.trim()) return "they differ only by surrounding whitespace";
-  if (presented.toLowerCase() === expected.toLowerCase()) return "they differ only by letter case";
-  if (presented.length !== expected.length) {
-    return `the request sent ${presented.length} chars, the variable holds ${expected.length}`;
+  if (presented.trim() === expected.trim()) return "they differ only by surrounding whitespace"; //only spaces differ
+  if (presented.toLowerCase() === expected.toLowerCase()) return "they differ only by letter case"; //only case differs
+  if (presented.length !== expected.length) { //different lengths
+    return `the request sent ${presented.length} chars, the variable holds ${expected.length}`; //give both lengths
   }
-  return `both are ${expected.length} chars but the contents differ`;
+  return `both are ${expected.length} chars but the contents differ`; //same length, different content
 }
 
-/** Compares an already-extracted credential against a configured secret, logging the precise reason on failure. */
+//---------------------------------------------------------------------------------------------------------
+//Compares an already-extracted credential against a configured secret, logging the result.
+//Input: label - log prefix; envName - the variable's name; headerName - where the credential came from;
+//presented - what the request sent; expected - the configured secret.
+//Output: true if they match exactly, else false.
+//Uses: describeMismatch (this file).
+//Workflow: the last step of isAuthorizedCron, hasWebhookSecret and hasBodyToken.
+//
+//Logs the precise reason on failure.
+//---------------------------------------------------------------------------------------------------------
 function verifySecret(
   label: string,
   envName: string,
@@ -195,14 +261,14 @@ function verifySecret(
   presented: string,
   expected: string,
 ): boolean {
-  if (presented === expected) {
-    console.log(`[auth] ${label}: authorized`);
-    return true;
+  if (presented === expected) { //exact match
+    console.log(`[auth] ${label}: authorized`); //log the pass
+    return true; //let it through
   }
-  console.warn(
+  console.warn( //log the rejection and why
     `[auth] ${label}: rejected - ${headerName} did not match ${envName} (${describeMismatch(presented, expected)})`,
   );
-  return false;
+  return false; //reject
 }
 //#endregion
 
