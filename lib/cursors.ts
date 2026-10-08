@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { credentialHint, supabaseBaseUrl, supabaseHeaders } from "./endpoints.js";
 import {
@@ -8,9 +9,11 @@ import {
   stringValue,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface SyncCursor {
   readonly syncKey: string;
@@ -46,11 +49,13 @@ export const CURSOR_GRACE_MS = 2 * 60 * 1_000;
 //Five minutes is that cadence with room over it. Re-reading the margin is free; parking past it is not.
 export const OUTFOUND_CURSOR_GRACE_MS = 5 * 60 * 1_000;
 
+//#endregion
 //=============================================================================================================
 
-//move cursors=================================================================================================
+//=============================================================================================================
+//#region <move cursors>
 
-//#region <move cursors: start and check>
+//#region <start and check>
 export function initialCursor(syncKey: string, nowMs = Date.now()): SyncCursor {
   return {
     syncKey,
@@ -74,7 +79,7 @@ export function isAfterCursor(cursor: SyncCursor, event: CursorEvent): boolean {
 }
 //#endregion
 
-//#region <move cursors: advance>
+//#region <advance>
 //---------------------------------------------------------------------------------------------------------
 //Moves the mark past one handled event. Returns a new cursor; never mutates.
 //FLOW: 1. older than the mark -> unchanged. 2. newer -> mark moves, boundary set resets to this ID alone.
@@ -113,11 +118,13 @@ export function advanceCursorTo(cursor: SyncCursor, timestampMs: number): SyncCu
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//store cursors in supabase====================================================================================
+//=============================================================================================================
+//#region <store cursors in supabase>
 
-//#region <store cursors in supabase: read and save>
+//#region <read and save>
 //---------------------------------------------------------------------------------------------------------
 //Reads one sync's persisted mark from Supabase (PostgREST).
 //FLOW: 1. build a filtered single-row GET. 2. send with supabaseHeaders (lib/endpoints.ts). 3. throw on non-2xx,
@@ -188,7 +195,7 @@ export async function saveSyncCursor(cursor: SyncCursor): Promise<void> {
 }
 //#endregion
 
-//#region <store cursors in supabase: parse stored rows>
+//#region <parse stored rows>
 function parseBoundaryIds(cursorValue: string | null): ReadonlySet<string> {
   if (!cursorValue) return new Set();
   try {
@@ -220,10 +227,11 @@ function parseCursorRow(value: unknown): CursorRow {
 }
 //#endregion
 
-//#region <store cursors in supabase: table address>
+//#region <table address>
 function cursorEndpoint(): URL {
   return new URL(`/rest/v1/${CURSOR_TABLE}`, supabaseBaseUrl());
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
