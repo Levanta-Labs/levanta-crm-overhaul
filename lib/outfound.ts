@@ -1,14 +1,3 @@
-import { credentialHint, OUTFOUND_BASE, outfoundAuthHeader } from "./endpoints.js";
-import {
-  arrayValue,
-  errorMessage,
-  isJsonObject,
-  objectValue,
-  responseJson,
-  stringValue,
-} from "./json.js";
-
-//=============================================================================================================
 //Outfound is not a sequencer. It sits on top of one - it ingests from Smartlead, Instantly, EmailBison,
 //HeyReach and AgentMail and warehouses every send, reply, bounce and category update. So the emails this module
 //reads were sent by some other platform; Outfound is the place they can all be read from at once.
@@ -22,57 +11,22 @@ import {
 //
 //The API is private and has no public documentation. It is written against the spec the deployment serves
 //itself, at https://api.outfound.io/openapi-client.json.
+
+//imports======================================================================================================
+
+import { credentialHint, OUTFOUND_BASE, outfoundAuthHeader } from "./endpoints.js";
+import {
+  arrayValue,
+  errorMessage,
+  isJsonObject,
+  objectValue,
+  responseJson,
+  stringValue,
+} from "./json.js";
+
 //=============================================================================================================
 
-//---------------------------------------------------------------------------------------------------------
-//Raised on a 429, so a caller can tell "slow down" apart from "this request was wrong".
-//WHY IT MATTERS HERE more than on the other providers: the touchpoint sync spends one request PER THREAD, and
-//the client key is rate-limited per key, not per organization. The dashboard shows the ORGANIZATION ceiling
-//(100K/hr on enterprise); `GET /rate-limit` reports what the key itself gets, which is a different and much
-//smaller number - the key in use is on the `standard` tier at 9/second and 3,000/hour. Across twelve runs an
-//hour that is roughly 250 threads per run before throttling, which a backlog reaches easily.
-//---------------------------------------------------------------------------------------------------------
-export class OutfoundRateLimitError extends Error {
-  constructor(detail: string) {
-    super(`Outfound rate limit reached: ${detail}`);
-    this.name = "OutfoundRateLimitError";
-  }
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Single transport for every Outfound call. Nothing else in this module calls fetch.
-//FLOW: 1. prefix with OUTFOUND_BASE. 2. attach the bearer under any caller override. 3. parse the body.
-//4. non-2xx -> throw, with credentialHint naming OUTFOUND_API_KEY on a 401/403.
-//[SECURITY] The key is read from env per request by outfoundAuthHeader and never cached in module state.
-//---------------------------------------------------------------------------------------------------------
-async function outfoundFetch(path: string, options: RequestInit = {}): Promise<unknown> {
-  const response = await fetch(`${OUTFOUND_BASE}${path}`, {
-    ...options,
-    headers: {
-      Authorization: outfoundAuthHeader(),
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-  const body = await responseJson(response);
-  //[STABILITY] A 429 is not a bad request and must not be treated as one: the caller stops the run on it rather
-  //than passing the thread over, because passing over would march through the rest of the backlog collecting one
-  //throttled failure per thread and finish no work at all. See OutfoundRateLimitError.
-  if (response.status === 429) {
-    const retryAfter = response.headers.get("retry-after");
-    throw new OutfoundRateLimitError(
-      `${path.split("?")[0]}${retryAfter ? `, retry after ${retryAfter}s` : ""}. GET /rate-limit reports the key's own tier, which is lower than the organization ceiling shown in the dashboard.`,
-    );
-  }
-  if (!response.ok) {
-    throw new Error(
-      `Outfound API error ${response.status}: ${JSON.stringify(body)}${credentialHint("outfound", response.status)}`,
-    );
-  }
-  return body;
-}
-
-//Interfaces=======================================================================================
+//types and globals============================================================================================
 
 /** Outfound's own vocabulary. Only Sent and Received are traffic that happened; the rest have not, or failed. */
 export type OutfoundEmailType = "Sent" | "Received" | "Scheduled" | "PendingSend" | "Failed" | "unknown";
@@ -102,8 +56,69 @@ export interface OutfoundThread {
   readonly leadCategorySentiment: string | null;
 }
 
-//=================================================================================================
+export interface OutfoundThreadQuery {
+  readonly fromMs: number;
+  readonly toMs: number;
+}
 
+export interface OutfoundConversation {
+  readonly id: string;
+  readonly threadHash: string;
+  readonly conversationType: OutfoundEmailType;
+  readonly subject: string | null;
+  readonly body: string | null;
+  readonly campaignName: string | null;
+  readonly timestampEmail: string;
+}
+
+export interface OutfoundLead {
+  readonly email: string;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly jobTitle: string | null;
+  readonly seniority: string | null;
+  readonly linkedin: string | null;
+  readonly companyName: string | null;
+  readonly companyDomain: string | null;
+  readonly companyLinkedin: string | null;
+  //An ISO 3166-1 alpha-2 country code, not a free-text place. parsePostalAddress (lib/interested.ts) is not
+  //given this: a bare country code is not an address, and Attio's location attribute is structured.
+  readonly location: string | null;
+  readonly industry: string | null;
+  readonly headcount: string | null;
+  readonly revenue: string | null;
+  /** Every thread this lead appears in, across clients. Rendered into the interested note, and keyed on for DNC. */
+  readonly conversations: readonly OutfoundConversation[];
+}
+
+//---------------------------------------------------------------------------------------------------------
+//Raised on a 429, so a caller can tell "slow down" apart from "this request was wrong".
+//WHY IT MATTERS HERE more than on the other providers: the touchpoint sync spends one request PER THREAD, and
+//the client key is rate-limited per key, not per organization. The dashboard shows the ORGANIZATION ceiling
+//(100K/hr on enterprise); `GET /rate-limit` reports what the key itself gets, which is a different and much
+//smaller number - the key in use is on the `standard` tier at 9/second and 3,000/hour. Across twelve runs an
+//hour that is roughly 250 threads per run before throttling, which a backlog reaches easily.
+//---------------------------------------------------------------------------------------------------------
+export class OutfoundRateLimitError extends Error {
+  constructor(detail: string) {
+    super(`Outfound rate limit reached: ${detail}`);
+    this.name = "OutfoundRateLimitError";
+  }
+}
+
+//The API's own maximum. Asking for more is not an error and not honoured either - it answers with `limit: 50`
+//whatever is requested - so the number here matches what is actually served rather than what we would prefer.
+const THREAD_PAGE_LIMIT = 50;
+//A bound on pagination, so a cursor the API never terminates cannot spin a run until Vercel kills it. At the
+//page size above this is 20,000 threads, far past anything a five-minute window produces; reaching it means
+//something is wrong with the cursor rather than that the window is genuinely that wide.
+const MAX_THREAD_PAGES = 200;
+
+//=============================================================================================================
+
+//parse outfound responses=====================================================================================
+
+//#region <parse outfound responses: emails and threads>
 function parseEmailType(value: unknown): OutfoundEmailType {
   const text = stringValue(value);
   switch (text) {
@@ -155,43 +170,52 @@ export function parseOutfoundThread(value: unknown): OutfoundThread {
     leadCategorySentiment: stringValue(value.lead_category_sentiment),
   };
 }
+//#endregion
 
-export interface OutfoundThreadQuery {
-  readonly fromMs: number;
-  readonly toMs: number;
-}
+//=============================================================================================================
 
+//outfound transport===========================================================================================
+
+//#region <outfound transport: requests>
 //---------------------------------------------------------------------------------------------------------
-//[LOGIC] A UTC timestamp with NO timezone designator, which is the only form the thread filter accepts.
-//
-//[STABILITY] WORKING AROUND AN UPSTREAM 500. Outfound's thread listing rejects any timezone-AWARE datetime with
-//an HTTP 500 and `{"detail":"An unexpected error occurred while listing email threads."}` - both the `Z` that
-//Date#toISOString appends and an explicit `+00:00` offset do it, on either bound, with or without the other.
-//A naive datetime is accepted. That is the signature of a timezone-aware value being compared against a naive
-//database column, so the column is UTC and this sends UTC; only the designator is dropped.
-//
-//Verified by hand against the live API:
-//    2026-09-02T13:58:30Z       -> 500        2026-09-02T13:58:30        -> 200
-//    2026-09-02T13:58:30+00:00  -> 500        2026-09-02T13:58:30.198    -> 200
-//
-//Remove this ONLY once Outfound accepts an offset, and re-check both bounds when doing so. Sending a bare local
-//time here instead of UTC would silently shift every window by the server's offset, which is why the value is
-//built from toISOString rather than from any local-time formatter.
-//USES: nothing. Pure.
+//Single transport for every Outfound call. Nothing else in this module calls fetch.
+//FLOW: 1. prefix with OUTFOUND_BASE. 2. attach the bearer under any caller override. 3. parse the body.
+//4. non-2xx -> throw, with credentialHint naming OUTFOUND_API_KEY on a 401/403.
+//[SECURITY] The key is read from env per request by outfoundAuthHeader and never cached in module state.
 //---------------------------------------------------------------------------------------------------------
-export function outfoundNaiveUtc(ms: number): string {
-  //toISOString is always UTC and always ends in "Z"; dropping that last character is the whole conversion.
-  return new Date(ms).toISOString().slice(0, -1);
+async function outfoundFetch(path: string, options: RequestInit = {}): Promise<unknown> {
+  const response = await fetch(`${OUTFOUND_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: outfoundAuthHeader(),
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+  const body = await responseJson(response);
+  //[STABILITY] A 429 is not a bad request and must not be treated as one: the caller stops the run on it rather
+  //than passing the thread over, because passing over would march through the rest of the backlog collecting one
+  //throttled failure per thread and finish no work at all. See OutfoundRateLimitError.
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    throw new OutfoundRateLimitError(
+      `${path.split("?")[0]}${retryAfter ? `, retry after ${retryAfter}s` : ""}. GET /rate-limit reports the key's own tier, which is lower than the organization ceiling shown in the dashboard.`,
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Outfound API error ${response.status}: ${JSON.stringify(body)}${credentialHint("outfound", response.status)}`,
+    );
+  }
+  return body;
 }
+//#endregion
 
-//The API's own maximum. Asking for more is not an error and not honoured either - it answers with `limit: 50`
-//whatever is requested - so the number here matches what is actually served rather than what we would prefer.
-const THREAD_PAGE_LIMIT = 50;
-//A bound on pagination, so a cursor the API never terminates cannot spin a run until Vercel kills it. At the
-//page size above this is 20,000 threads, far past anything a five-minute window produces; reaching it means
-//something is wrong with the cursor rather than that the window is genuinely that wide.
-const MAX_THREAD_PAGES = 200;
+//=============================================================================================================
 
+//read threads and emails======================================================================================
+
+//#region <read threads and emails: thread windows>
 //---------------------------------------------------------------------------------------------------------
 //Every thread with activity in a window, paginated. Bodies are NOT included - see fetchOutfoundThreadEmails.
 //FLOW: 1. GET a page bounded by email_start_date/email_end_date. 2. parse items. 3. follow next_cursor until
@@ -243,6 +267,31 @@ export async function fetchOutfoundThreads(
 }
 
 //---------------------------------------------------------------------------------------------------------
+//[LOGIC] A UTC timestamp with NO timezone designator, which is the only form the thread filter accepts.
+//
+//[STABILITY] WORKING AROUND AN UPSTREAM 500. Outfound's thread listing rejects any timezone-AWARE datetime with
+//an HTTP 500 and `{"detail":"An unexpected error occurred while listing email threads."}` - both the `Z` that
+//Date#toISOString appends and an explicit `+00:00` offset do it, on either bound, with or without the other.
+//A naive datetime is accepted. That is the signature of a timezone-aware value being compared against a naive
+//database column, so the column is UTC and this sends UTC; only the designator is dropped.
+//
+//Verified by hand against the live API:
+//    2026-09-02T13:58:30Z       -> 500        2026-09-02T13:58:30        -> 200
+//    2026-09-02T13:58:30+00:00  -> 500        2026-09-02T13:58:30.198    -> 200
+//
+//Remove this ONLY once Outfound accepts an offset, and re-check both bounds when doing so. Sending a bare local
+//time here instead of UTC would silently shift every window by the server's offset, which is why the value is
+//built from toISOString rather than from any local-time formatter.
+//USES: nothing. Pure.
+//---------------------------------------------------------------------------------------------------------
+export function outfoundNaiveUtc(ms: number): string {
+  //toISOString is always UTC and always ends in "Z"; dropping that last character is the whole conversion.
+  return new Date(ms).toISOString().slice(0, -1);
+}
+//#endregion
+
+//#region <read threads and emails: thread messages>
+//---------------------------------------------------------------------------------------------------------
 //Every message in one thread. The second half of every read: the inbox listing carries no bodies.
 //[PERF] One request per thread, which is what makes the touchpoint sync's cost scale with threads rather than
 //with pages. The run budget is what keeps that bounded - see lib/run-budget.ts.
@@ -255,46 +304,20 @@ export async function fetchOutfoundThreadEmails(
   if (!isJsonObject(body)) throw new Error("Outfound thread emails response is invalid");
   return arrayValue(body, "items").map((item) => parseOutfoundEmail(item, threadHash));
 }
+//#endregion
 
 //=============================================================================================================
+
+//read and suppress leads======================================================================================
+
 //The lead record, and the DNC list.
 //
 //One endpoint answers both of the interested route's questions at once. /prospects/lookup/conversations returns
 //the enrichment (title, seniority, LinkedIn, and the company's domain, industry, headcount and revenue) AND the
 //recent conversations the note is rendered from - so the route pays one request where the Instantly route pays
 //two, and gets a richer record for it.
-//=============================================================================================================
 
-export interface OutfoundConversation {
-  readonly id: string;
-  readonly threadHash: string;
-  readonly conversationType: OutfoundEmailType;
-  readonly subject: string | null;
-  readonly body: string | null;
-  readonly campaignName: string | null;
-  readonly timestampEmail: string;
-}
-
-export interface OutfoundLead {
-  readonly email: string;
-  readonly firstName: string | null;
-  readonly lastName: string | null;
-  readonly jobTitle: string | null;
-  readonly seniority: string | null;
-  readonly linkedin: string | null;
-  readonly companyName: string | null;
-  readonly companyDomain: string | null;
-  readonly companyLinkedin: string | null;
-  //An ISO 3166-1 alpha-2 country code, not a free-text place. parsePostalAddress (lib/interested.ts) is not
-  //given this: a bare country code is not an address, and Attio's location attribute is structured.
-  readonly location: string | null;
-  readonly industry: string | null;
-  readonly headcount: string | null;
-  readonly revenue: string | null;
-  /** Every thread this lead appears in, across clients. Rendered into the interested note, and keyed on for DNC. */
-  readonly conversations: readonly OutfoundConversation[];
-}
-
+//#region <read and suppress leads: parse lead records>
 function parseConversation(value: unknown): OutfoundConversation | null {
   if (!isJsonObject(value)) return null;
   const id = stringValue(value.id);
@@ -354,7 +377,9 @@ export function parseOutfoundLead(value: unknown): OutfoundLead {
     conversations,
   };
 }
+//#endregion
 
+//#region <read and suppress leads: look up a lead>
 //---------------------------------------------------------------------------------------------------------
 //The lead behind an address, or null when Outfound holds none.
 //Unlike the Instantly equivalent this needs no exact-match guard: the endpoint is keyed on the address rather
@@ -400,7 +425,9 @@ function describeOutfoundLead(lead: OutfoundLead): string {
     present.length > 0 ? `carrying ${present.join(", ")}` : "carrying nothing beyond the address";
   return `${carrying}, across ${lead.conversations.length} conversation(s)`;
 }
+//#endregion
 
+//#region <read and suppress leads: do-not-contact list>
 //---------------------------------------------------------------------------------------------------------
 //Marks an address do-not-contact, so no connected sequencer mails it again.
 //Part of the suppression that runs for every interested lead whatever platform reported the interest - see
@@ -429,3 +456,6 @@ export async function markOutfoundThreadDnc(threadHash: string, email: string): 
     throw error;
   }
 }
+//#endregion
+
+//=============================================================================================================
