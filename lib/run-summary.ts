@@ -12,15 +12,18 @@
 //rather than in each handler because a summary that is only sometimes comparable across the four providers is
 //barely better than one that is sometimes absent.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import type { SyncCursor } from "./cursors.js";
 
+//#endregion
 //=============================================================================================================
 
-//build the summary line=======================================================================================
+//=============================================================================================================
+//#region <build the summary line>
 
-//#region <build the summary line: run outcome and cursor state>
+//#region <run outcome and cursor state>
 //---------------------------------------------------------------------------------------------------------
 //[DEBUG] How the run ended.
 //`stopped` is null when the loop ran to the end, and otherwise the reason it stopped - "budget" or
@@ -49,4 +52,5 @@ export function cursorState(cursor: SyncCursor | null, saved: boolean): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
