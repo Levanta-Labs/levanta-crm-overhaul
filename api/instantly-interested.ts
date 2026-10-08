@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { findPersonByEmail } from "../lib/attio.js";
 import { hasWebhookSecret, json, requestJson, serverError } from "../lib/http.js";
@@ -17,9 +18,11 @@ import {
 import { errorMessage, isJsonObject, stringValue } from "../lib/json.js";
 import { toE164 } from "../lib/phone.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface InstantlyInterestedFields {
   readonly eventType: string;
@@ -30,9 +33,11 @@ export interface InstantlyInterestedFields {
   readonly campaignName: string | null;
 }
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Instantly posts here when a lead is marked interested.
@@ -123,11 +128,13 @@ Campaign: ${fields.campaignName}` : ""}`;
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//read the webhook=============================================================================================
+//=============================================================================================================
+//#region <read the webhook>
 
-//#region <read the webhook: parse the body>
+//#region <parse the body>
 /** Instantly sends a flat v2 body. event_type and lead_email are required; the rest is best-effort enrichment. */
 export function parseInstantlyInterestedWebhook(value: unknown): InstantlyInterestedFields {
   if (!isJsonObject(value)) throw new Error("Instantly webhook payload must be an object");
@@ -145,11 +152,13 @@ export function parseInstantlyInterestedWebhook(value: unknown): InstantlyIntere
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record the interested lead===================================================================================
+//=============================================================================================================
+//#region <record the interested lead>
 
-//#region <record the interested lead: read the lead record>
+//#region <read the lead record>
 /**
  * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
  * failure is logged and swallowed rather than raised.
@@ -167,7 +176,7 @@ async function enrichFromInstantly(email: string): Promise<InstantlyLead | null>
 }
 //#endregion
 
-//#region <record the interested lead: shape for attio>
+//#region <shape for attio>
 //---------------------------------------------------------------------------------------------------------
 //The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
 //The webhook is thin - an event type, an address, sometimes a name and a campaign. Everything else Instantly
@@ -205,7 +214,7 @@ export function instantlyLead(
 }
 //#endregion
 
-//#region <record the interested lead: format the email thread>
+//#region <format the email thread>
 /** Renders the thread oldest-first so the note reads top to bottom. Sorted on timestampEmail, not creation order. */
 export function formatInstantlyThread(
   emails: readonly InstantlyEmail[],
@@ -226,4 +235,5 @@ export function formatInstantlyThread(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
