@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { fetchAircallCallWindow, formatCallDuration, type AircallCall } from "../../lib/aircall.js";
 import { toE164 } from "../../lib/phone.js";
@@ -31,9 +32,11 @@ import { isAuthorizedCron, json, serverError } from "../../lib/http.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const SYNC_KEY = "aircall-touchpoints";
 
@@ -55,9 +58,11 @@ const MAX_CALL_DURATION_MS = 2 * 60 * 60 * 1_000;
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every ten minutes (`*/10 * * * *`), under a wall-clock budget - see lib/run-budget.ts.
@@ -232,18 +237,20 @@ export async function GET(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//record call touchpoints======================================================================================
+//=============================================================================================================
+//#region <record call touchpoints>
 
-//#region <record call touchpoints: order calls>
+//#region <order calls>
 /** Places a call on the cursor timeline by when it finished, not when it started. */
 export function aircallCursorEvent(call: AircallCall): CursorEvent {
   return { id: String(call.id), timestampMs: (call.endedAt ?? call.startedAt) * 1_000 };
 }
 //#endregion
 
-//#region <record call touchpoints: write to attio>
+//#region <write to attio>
 //---------------------------------------------------------------------------------------------------------
 //Records one call as a touchpoint. Writes no Person note by design - the call lives in Aircall and the Person
 //only needs the count; the Company carries the note as the roll-up view.
@@ -296,4 +303,5 @@ export async function processAircallTouchpoint(call: AircallCall): Promise<Proce
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
