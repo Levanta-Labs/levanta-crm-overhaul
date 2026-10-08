@@ -5,7 +5,8 @@
 //E.164 ("+19497354000"). A lookup keyed on any other spelling silently misses, and a miss creates a duplicate
 //Person rather than matching the real one - which is why there is exactly one implementation of this.
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 //[LOGIC] E.164 allows 15 digits at most, and needs a country code plus a national number to be dialable. A
 //shorter string is a fragment - an extension, a local number with the area code lost - and writing it to Attio
@@ -13,11 +14,13 @@
 const MIN_E164_DIGITS = 8;
 const MAX_E164_DIGITS = 15;
 
+//#endregion
 //=============================================================================================================
 
-//normalise phone numbers======================================================================================
+//=============================================================================================================
+//#region <normalise phone numbers>
 
-//#region <normalise phone numbers: to e.164>
+//#region <to e.164>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] Any spelling of a phone number into E.164, or null when it is not one.
 //FLOW: 1. no input -> null. 2. strip everything that is not a digit, which also discards a "+" wherever it sat.
@@ -34,4 +37,5 @@ export function toE164(raw: string | null): string | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
