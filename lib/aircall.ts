@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { AIRCALL_BASE, aircallAuthHeader, credentialHint } from "./endpoints.js";
 import { rateLimitWaitMs } from "./http.js";
@@ -14,9 +15,11 @@ import {
   stringValue,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface AircallTag {
   readonly name: string;
@@ -78,11 +81,13 @@ const RATE_LIMIT_BASE_MS = 500;
 //waiting - the next run starts with a fresh allowance either way. See rateLimitWaitMs (lib/http.ts).
 const RATE_LIMIT_MAX_WAIT_MS = 5_000;
 
+//#endregion
 //=============================================================================================================
 
-//parse aircall responses======================================================================================
+//=============================================================================================================
+//#region <parse aircall responses>
 
-//#region <parse aircall responses: calls>
+//#region <calls>
 function parseTag(value: unknown): AircallTag | null {
   if (!isJsonObject(value)) return null;
   const name = stringValue(value.name);
@@ -125,7 +130,7 @@ export function parseAircallCall(value: unknown): AircallCall {
 }
 //#endregion
 
-//#region <parse aircall responses: contact fields>
+//#region <contact fields>
 /** Every number on a contact, normalised. Aircall lists them as objects; a stray string is accepted too. */
 function contactPhoneNumbers(contact: Record<string, unknown>): readonly string[] {
   const numbers: string[] = [];
@@ -153,7 +158,7 @@ function contactEmail(contact: Record<string, unknown>): string | null {
 }
 //#endregion
 
-//#region <parse aircall responses: campaign contacts>
+//#region <campaign contacts>
 //Turns one raw campaign contact into an AircallCampaignContact. Null when it is not an object.
 function parseCampaignContact(value: unknown): AircallCampaignContact | null {
   if (!isJsonObject(value)) return null; //nothing readable, no contact
@@ -168,9 +173,11 @@ function parseCampaignContact(value: unknown): AircallCampaignContact | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//aircall transport============================================================================================
+//=============================================================================================================
+//#region <aircall transport>
 
 //Rate limiting.
 //
@@ -184,7 +191,7 @@ function parseCampaignContact(value: unknown): AircallCampaignContact | null {
 //20-per-minute ceiling is a documented hard figure.
 //A refused request was not processed, so repeating it cannot apply anything twice.
 
-//#region <aircall transport: rate limiting>
+//#region <rate limiting>
 /**
  * [LOGIC] Aircall's own reset header, in ms from now. Documented only as "timestamp when the counter will be
  * reset" with no unit, so both readings are accepted: a value that looks like epoch SECONDS is treated as one,
@@ -205,7 +212,7 @@ function aircallResetMs(response: Response): number | null {
 }
 //#endregion
 
-//#region <aircall transport: requests>
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every Aircall call. Nothing else in this module calls fetch.
 //FLOW: 1. GET the absolute url. 2. 429 with attempts left -> wait and repeat. 3. 429 out of attempts ->
@@ -247,11 +254,13 @@ async function aircallFetch(url: string): Promise<unknown> {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read calls and contacts======================================================================================
+//=============================================================================================================
+//#region <read calls and contacts>
 
-//#region <read calls and contacts: call windows>
+//#region <call windows>
 //---------------------------------------------------------------------------------------------------------
 //Reads every completed call in a window. The touchpoint cron is the only caller.
 //FLOW: 1. build page one from fromMs/toMs. 2. follow meta.next_page_link until null. 3. parse each entry with
@@ -327,7 +336,7 @@ export async function fetchAircallCalls(fromMs: number, toMs: number): Promise<r
 }
 //#endregion
 
-//#region <read calls and contacts: single records>
+//#region <single records>
 //Reads one call by its id. Throws if Aircall refuses or returns something unreadable.
 export async function fetchAircallCall(callId: number): Promise<AircallCall> {
   const body = await aircallFetch(`${AIRCALL_BASE}/calls/${callId}`); //GET /v1/calls/{id}
@@ -345,11 +354,13 @@ export async function fetchCampaignContact(campaignId: string, phone: string): P
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//format for notes=============================================================================================
+//=============================================================================================================
+//#region <format for notes>
 
-//#region <format for notes: duration>
+//#region <duration>
 //---------------------------------------------------------------------------------------------------------
 //A call's length for a note. Whole minutes are the wrong unit for this data: `duration` counts ring time as
 //well as talk time, and on a dialled campaign a median call runs about 18 seconds, so rounding to minutes
@@ -369,4 +380,5 @@ export function formatCallDuration(seconds: number): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
