@@ -1,6 +1,19 @@
+//imports======================================================================================================
+
 import { optionalEnv } from "./env.js";
 import { errorMessage } from "./json.js";
 
+//=============================================================================================================
+
+//types and globals============================================================================================
+
+const BEARER = "Bearer ";
+
+//=============================================================================================================
+
+//read requests and send responses=============================================================================
+
+//#region <read requests and send responses: json bodies>
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
 }
@@ -12,8 +25,20 @@ export async function requestJson(request: Request): Promise<unknown> {
     throw new Error("Request body must be valid JSON");
   }
 }
+//#endregion
+
+//#region <read requests and send responses: errors>
+/** [DEBUG] Terminal catch for every route. Logs the raw error, returns only its message to the caller. */
+export function serverError(label: string, error: unknown): Response {
+  console.error(label, error);
+  return json({ error: errorMessage(error) }, 500);
+}
+//#endregion
 
 //=============================================================================================================
+
+//wait out rate limits=========================================================================================
+
 //Waiting out a rate limit, shared by every provider transport.
 //
 //WHY IT LIVES HERE. Attio, Instantly, HeyReach and Aircall all answer 429 and all have to decide how long to
@@ -26,8 +51,8 @@ export async function requestJson(request: Request): Promise<unknown> {
 //of time and no way to pace proactively; a transport can only react to the refusal when it arrives. That is
 //why these two get a retry rather than a self-imposed cap like INSTANTLY_SYNC_PAGE_LIMIT, which exists only
 //because Instantly's 20-per-minute ceiling is documented as a hard number.
-//=============================================================================================================
 
+//#region <wait out rate limits: wait times>
 /** A `Retry-After` in ms, when one is sent. Seconds or an HTTP date; anything else is ignored. */
 export function retryAfterMs(response: Response): number | null {
   const header = response.headers.get("retry-after");
@@ -57,47 +82,16 @@ export function rateLimitWaitMs(
   const wait = stated ?? baseMs * 2 ** (attempt - 1);
   return Math.min(Math.max(0, wait), maxMs);
 }
-
-/** [DEBUG] Terminal catch for every route. Logs the raw error, returns only its message to the caller. */
-export function serverError(label: string, error: unknown): Response {
-  console.error(label, error);
-  return json({ error: errorMessage(error) }, 500);
-}
+//#endregion
 
 //=============================================================================================================
+
+//verify shared secrets========================================================================================
+
 //Shared-secret verification. Both sides of the comparison are in this process, so a rejection can say exactly
 //why it failed. The secrets themselves are never logged - only their length and how the two values diverge.
-//=============================================================================================================
 
-const BEARER = "Bearer ";
-
-function describeMismatch(presented: string, expected: string): string {
-  if (presented.trim() === expected.trim()) return "they differ only by surrounding whitespace";
-  if (presented.toLowerCase() === expected.toLowerCase()) return "they differ only by letter case";
-  if (presented.length !== expected.length) {
-    return `the request sent ${presented.length} chars, the variable holds ${expected.length}`;
-  }
-  return `both are ${expected.length} chars but the contents differ`;
-}
-
-/** Compares an already-extracted credential against a configured secret, logging the precise reason on failure. */
-function verifySecret(
-  label: string,
-  envName: string,
-  headerName: string,
-  presented: string,
-  expected: string,
-): boolean {
-  if (presented === expected) {
-    console.log(`[auth] ${label}: authorized`);
-    return true;
-  }
-  console.warn(
-    `[auth] ${label}: rejected - ${headerName} did not match ${envName} (${describeMismatch(presented, expected)})`,
-  );
-  return false;
-}
-
+//#region <verify shared secrets: route gates>
 //---------------------------------------------------------------------------------------------------------
 //[SECURITY] Gate on all three cron routes. Called first in every GET, before any external request.
 //FLOW: 1. no CRON_SECRET configured -> reject; nothing can be verified. 2. no authorization header -> reject.
@@ -172,3 +166,35 @@ export function hasBodyToken(presented: string | null, envName: string): boolean
   }
   return verifySecret(envName, envName, "the body's token field", presented, secret); //compare, log the result
 }
+//#endregion
+
+//#region <verify shared secrets: compare values>
+function describeMismatch(presented: string, expected: string): string {
+  if (presented.trim() === expected.trim()) return "they differ only by surrounding whitespace";
+  if (presented.toLowerCase() === expected.toLowerCase()) return "they differ only by letter case";
+  if (presented.length !== expected.length) {
+    return `the request sent ${presented.length} chars, the variable holds ${expected.length}`;
+  }
+  return `both are ${expected.length} chars but the contents differ`;
+}
+
+/** Compares an already-extracted credential against a configured secret, logging the precise reason on failure. */
+function verifySecret(
+  label: string,
+  envName: string,
+  headerName: string,
+  presented: string,
+  expected: string,
+): boolean {
+  if (presented === expected) {
+    console.log(`[auth] ${label}: authorized`);
+    return true;
+  }
+  console.warn(
+    `[auth] ${label}: rejected - ${headerName} did not match ${envName} (${describeMismatch(presented, expected)})`,
+  );
+  return false;
+}
+//#endregion
+
+//=============================================================================================================
