@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { reportConfigEmail, reportConfigValue, requiredEnv } from "./env.js";
 import type { Provider } from "./providers.js";
@@ -15,9 +16,11 @@ import {
   type JsonObject,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export type AttioObject = "people" | "companies" | "deals";
 
@@ -146,13 +149,15 @@ export class ThrottledBeforeWrite extends Error {
 const NOTE_PAGE_LIMIT = 50;
 const MAX_NOTE_PAGES = 4;
 
+//#endregion
 //=============================================================================================================
 
-//parse attio records==========================================================================================
+//=============================================================================================================
+//#region <parse attio records>
 
 //parce functions, turns raw pull from attio (json) into usable data
 
-//#region <parse attio records: whole records>
+//#region <whole records>
 //---------------------------------------------------------------------------------------------------------
 //Turns one raw Attio record of any object into the shape the rest of the codebase uses.
 //FLOW: 1. require id.record_id and values. 2. keep the values verbatim. 3. record which slugs hold anything.
@@ -198,7 +203,7 @@ export function parseAttioPerson(value: unknown): AttioPerson {
 }
 //#endregion
 
-//#region <parse attio records: references>
+//#region <references>
 function parseRecordReference(value: unknown): AttioRecordReference | null {
   if (!isJsonObject(value)) return null;
   const recordId = stringValue(value.target_record_id);
@@ -217,7 +222,7 @@ function parseReferences(values: JsonObject, key: string): readonly AttioRecordR
 }
 //#endregion
 
-//#region <parse attio records: names and links>
+//#region <names and links>
 /**
  * The name on a record we have already fetched. Attio spells the attribute two ways - a person's name is
  * structured (`full_name`), a company's is a plain text `value` - and either may be absent. Returns null rather
@@ -243,13 +248,15 @@ export function personCompanyId(person: AttioPerson): string | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//look up people and companies=================================================================================
+//=============================================================================================================
+//#region <look up people and companies>
 
 //          Match Data From Thrid Party Records To Record ID In Attio
 
-//#region <look up people and companies: people>
+//#region <people>
 //---------------------------------------------------------------------------------------------------------
 //One filtered person query. The three exported wrappers below differ only in the attribute searched.
 //FLOW: 1. no value -> no query. 2. POST the filter, limit 1. 3. no hit -> null. 4. hit -> parseAttioPerson.
@@ -292,7 +299,7 @@ export function findPersonByLinkedIn(profileUrl: string | null): Promise<AttioPe
 }
 //#endregion
 
-//#region <look up people and companies: companies>
+//#region <companies>
 //Companies. Before this existed no interested workflow resolved one, so a deal opened for a brand-new lead
 //carried no company and the touchpoint crons had nothing to hang a company note or counter on.
 
@@ -328,7 +335,7 @@ export function findCompanyByName(name: string | null): Promise<AttioRecord | nu
 }
 //#endregion
 
-//#region <look up people and companies: whole records>
+//#region <whole records>
 /** Reads one record whole, so a caller can see what it already holds before deciding what to write. */
 export async function fetchRecord(object: AttioObject, recordId: string): Promise<AttioRecord> {
   const response = await attioFetch(`/objects/${object}/records/${recordId}`);
@@ -336,9 +343,11 @@ export async function fetchRecord(object: AttioObject, recordId: string): Promis
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//write to attio===============================================================================================
+//=============================================================================================================
+//#region <write to attio>
 
 //push to attio
 //
@@ -352,7 +361,7 @@ export async function fetchRecord(object: AttioObject, recordId: string): Promis
 //an id logs the id rather than spending a request to resolve a name for a log line. The exception is
 //incrementCounter, which has to read the record anyway and so takes the name off a response already paid for.
 
-//#region <write to attio: create records>
+//#region <create records>
 /** Creates a person and returns it parsed, so the caller has both the new ID and its populated-attribute set. */
 export async function createPerson(values: AttioValues): Promise<AttioPerson> {
   //Not withAction: the log line needs the created record's name, which only exists after the response parses.
@@ -387,7 +396,7 @@ export async function createCompany(values: AttioValues): Promise<AttioRecord> {
 }
 //#endregion
 
-//#region <write to attio: update records>
+//#region <update records>
 //---------------------------------------------------------------------------------------------------------
 //The one write path for attributes on any record. Deliberately dumb: it writes exactly what it is handed.
 //Deciding WHAT may be written - which is the never-overwrite rule - belongs to updateAttioAttributes
@@ -415,7 +424,7 @@ export async function patchRecord(
 }
 //#endregion
 
-//#region <write to attio: deals>
+//#region <deals>
 //---------------------------------------------------------------------------------------------------------
 //Returns the deal to attach interested history to, creating one only when the person has none.
 //FLOW: 1. person already linked to a deal -> fetch and return it. 2. otherwise create at stage Interested,
@@ -492,7 +501,7 @@ export async function ensureInterestedDeal(
 }
 //#endregion
 
-//#region <write to attio: action logging>
+//#region <action logging>
 /** [DEBUG] Wraps one write so the log says whether it happened. Re-throws unchanged; changes no control flow. */
 async function withAction<T>(action: string, run: () => Promise<T>): Promise<T> {
   try {
@@ -506,11 +515,13 @@ async function withAction<T>(action: string, run: () => Promise<T>): Promise<T> 
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//manage lists=================================================================================================
+//=============================================================================================================
+//#region <manage lists>
 
-//#region <manage lists: check membership>
+//#region <check membership>
 //---------------------------------------------------------------------------------------------------------
 //List-membership test. The three touchpoint crons gate every write on this returning true for Master TAM.
 //FLOW: 1. read the person's list entries. 2. match the slug in either spelling Attio uses for it.
@@ -535,7 +546,7 @@ export async function isPersonInList(
 }
 //#endregion
 
-//#region <manage lists: add to a list>
+//#region <add to a list>
 /** PUT asserts the entry, so re-adding an already-listed person is a no-op rather than a duplicate. */
 export async function addPersonToList(
   personId: string,
@@ -553,11 +564,13 @@ export async function addPersonToList(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//manage notes=================================================================================================
+//=============================================================================================================
+//#region <manage notes>
 
-//#region <manage notes: read notes>
+//#region <read notes>
 //---------------------------------------------------------------------------------------------------------
 //Every note on one record, up to the page bound.
 //FLOW: 1. page through /notes filtered to this parent. 2. stop on a short page, on the bound, or on a page
@@ -604,7 +617,7 @@ function parseAttioNote(value: unknown): AttioNote | null {
 }
 //#endregion
 
-//#region <manage notes: write notes>
+//#region <write notes>
 /** Appends a note. Attio has no upsert for notes, so calling twice produces two notes. */
 export async function createNote(
   parentObject: AttioObject,
@@ -630,11 +643,13 @@ export async function createNote(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//count touchpoints============================================================================================
+//=============================================================================================================
+//#region <count touchpoints>
 
-//#region <count touchpoints: increment a counter>
+//#region <increment a counter>
 //---------------------------------------------------------------------------------------------------------
 //Raises a counter attribute by one. Read-then-write, because Attio exposes no atomic increment.
 //FLOW: 1. GET the record. 2. take its name off that response for the log. 3. parseCounterValue. 4. PATCH
@@ -693,11 +708,13 @@ function counterValue(record: AttioRecord, attributeSlug: string): number {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read attio settings==========================================================================================
+//=============================================================================================================
+//#region <read attio settings>
 
-//#region <read attio settings: counter slugs>
+//#region <counter slugs>
 //Counter attribute slugs. Both scopes are configured rather than hardcoded: the Attio attribute names have already
 //diverged once (the Company HeyReach counter is not the same slug as the Person one), and renaming an attribute in
 //Attio should not require a redeploy. A missing value throws rather than defaulting, because a wrong slug would
@@ -720,7 +737,7 @@ export function companyCounterSlug(provider: Provider): string {
 }
 //#endregion
 
-//#region <read attio settings: deal owner>
+//#region <deal owner>
 /** Single accessor for the deal owner so the configured address is reported once, by domain only. */
 export function defaultDealOwner(): string {
   const owner = requiredEnv("ATTIO_DEFAULT_DEAL_OWNER");
@@ -730,11 +747,13 @@ export function defaultDealOwner(): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//detect throttled events======================================================================================
+//=============================================================================================================
+//#region <detect throttled events>
 
-//#region <detect throttled events: before any write>
+//#region <before any write>
 //---------------------------------------------------------------------------------------------------------
 //Wraps a touchpoint step that has not yet written anything. A TRANSIENT failure there becomes
 //ThrottledBeforeWrite; a deterministic one (a 400 or 404, a bad slug, a malformed record) is re-raised
@@ -763,11 +782,13 @@ function isTransientAttioError(error: unknown): boolean {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//attio transport==============================================================================================
+//=============================================================================================================
+//#region <attio transport>
 
-//#region <attio transport: requests>
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every Attio call in the codebase. Nothing else calls fetch against Attio.
 //FLOW: 1. prefix the path with ATTIO_BASE. 2. merge attioHeaders (lib/endpoints.ts) under any caller override.
@@ -813,7 +834,7 @@ function responseData(value: unknown): unknown {
 }
 //#endregion
 
-//#region <attio transport: retry rules>
+//#region <retry rules>
 /** GET is the default when a caller passes no method, matching fetch. */
 function isReadOnly(options: RequestInit): boolean {
   return (options.method ?? "GET").toUpperCase() === "GET";
@@ -825,4 +846,5 @@ function isRetryable(status: number, options: RequestInit): boolean {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
