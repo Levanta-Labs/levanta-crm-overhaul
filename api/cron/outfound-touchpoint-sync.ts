@@ -267,7 +267,7 @@ export async function GET(request: Request): Promise<Response> {
 //function alone. Vercel would then kill the run before saveSyncCursor, the next run would redo the same window,
 //and the sync would never make progress: exactly the permanent loop lib/run-budget.ts exists to prevent.
 //Stopping here is safe because the cursor has not moved - but ONLY if the caller then refuses to park it. See
-//OutfoundExpansion.truncated.
+//OutfoundExpansion.stoppedBy.
 //[STABILITY] A thread whose messages cannot be read is logged and passed over rather than failing the run. One
 //unreadable thread must not cost the whole window, and the cursor never advanced past it, so it is retried next
 //run - unlike a failed EMAIL, which is passed over permanently once its writes may have landed.

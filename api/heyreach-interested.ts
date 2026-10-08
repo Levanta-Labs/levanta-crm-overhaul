@@ -195,7 +195,7 @@ export async function POST(request: Request): Promise<Response> {
 //Uses: leadCandidates, readFields (this file); describeShape (lib/json.ts).
 //Workflow: heyreach-interested webhook step 2 - finds the lead. Also called by unit tests.
 //
-//All five fields come from the SAME object, so a name is never read off one record and pinned to another.
+//All six fields come from the SAME object, so a name is never read off one record and pinned to another.
 //---------------------------------------------------------------------------------------------------------
 export function parseHeyReachInterestedWebhook(value: unknown): HeyReachInterestedFields {
   if (!isJsonObject(value)) throw new Error("HeyReach webhook payload must be an object"); //not a webhook at all
