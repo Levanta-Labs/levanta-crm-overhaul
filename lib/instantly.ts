@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { credentialHint, INSTANTLY_BASE, instantlyAuthHeader } from "./endpoints.js";
 import {
@@ -11,9 +12,11 @@ import {
   type JsonObject,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export type InstantlyEmailType = "received" | "sent" | "scheduled" | "unknown";
 
@@ -111,11 +114,13 @@ const NAMED_ENTITIES: Record<string, string> = {
 //---------------------------------------------------------------------------------------------------------
 export const INSTANTLY_SYNC_PAGE_LIMIT = 15;
 
+//#endregion
 //=============================================================================================================
 
-//parse instantly responses====================================================================================
+//=============================================================================================================
+//#region <parse instantly responses>
 
-//#region <parse instantly responses: emails>
+//#region <emails>
 function parseEmailType(value: unknown): InstantlyEmailType {
   if (value === 1 || value === 3) return "sent";
   if (value === 2) return "received";
@@ -151,9 +156,11 @@ export function parseInstantlyEmail(value: unknown): InstantlyEmail {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//convert email html to text===================================================================================
+//=============================================================================================================
+//#region <convert email html to text>
 
 //Email bodies, as prose.
 //
@@ -162,7 +169,7 @@ export function parseInstantlyEmail(value: unknown): InstantlyEmail {
 //client produced - has both. Reading `text` alone therefore left every outbound touchpoint note reading
 //"(no content)", which is most of them. The markup is unwrapped here instead.
 
-//#region <convert email html to text: html bodies>
+//#region <html bodies>
 /** The named and numeric entities an email body actually uses. Anything unrecognised is left exactly as it was. */
 function decodeEntities(html: string): string {
   return html.replace(
@@ -208,11 +215,13 @@ export function htmlToPlainText(html: string | null): string | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//instantly transport==========================================================================================
+//=============================================================================================================
+//#region <instantly transport>
 
-//#region <instantly transport: requests>
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every Instantly call. Nothing else in this module calls fetch.
 //FLOW: 1. prefix with INSTANTLY_BASE. 2. attach the bearer under any caller override. 3. parse the body.
@@ -248,11 +257,13 @@ async function instantlyFetch(path: string, options: RequestInit = {}): Promise<
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read emails==================================================================================================
+//=============================================================================================================
+//#region <read emails>
 
-//#region <read emails: email windows>
+//#region <email windows>
 //---------------------------------------------------------------------------------------------------------
 //Reads emails, paginated, up to `maxPages`.
 //FLOW: 1. build a page from whichever query fields are set. 2. GET. 3. parse items. 4. follow
@@ -331,9 +342,11 @@ export async function fetchInstantlyEmails(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read and block leads=========================================================================================
+//=============================================================================================================
+//#region <read and block leads>
 
 //The lead record, and the blocklist.
 //
@@ -341,7 +354,7 @@ export async function fetchInstantlyEmails(
 //enriching Attio with (job title, LinkedIn URL, phone, industry, headcount, revenue, location, company address)
 //lives on the lead record instead, under the custom-variable payload, so the interested route reads it back.
 
-//#region <read and block leads: parse lead records>
+//#region <parse lead records>
 //The payload is a workspace's own custom variables, so its keys are whatever whoever built the campaign typed:
 //"# Employees", "Annual Revenue", "Company Address", "linkedIn". Keys are therefore compared on their letters
 //and digits alone, which makes "# Employees" and "employees" one name and survives a variable being renamed to
@@ -390,7 +403,7 @@ export function parseInstantlyLead(value: unknown): InstantlyLead {
 }
 //#endregion
 
-//#region <read and block leads: look up a lead>
+//#region <look up a lead>
 //---------------------------------------------------------------------------------------------------------
 //The lead record behind an address, or null when Instantly holds none.
 //FLOW: 1. free-text search on the address. 2. keep only an EXACT case-insensitive match on `email`.
@@ -426,7 +439,7 @@ function describeInstantlyLead(lead: InstantlyLead): string {
 }
 //#endregion
 
-//#region <read and block leads: blocklist>
+//#region <blocklist>
 //---------------------------------------------------------------------------------------------------------
 //Adds an address to the workspace blocklist, so no campaign can mail it again.
 //Part of the suppression that runs for every interested lead whatever platform reported the interest - see
@@ -449,4 +462,5 @@ export async function blockInstantlyLead(value: string): Promise<void> {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
