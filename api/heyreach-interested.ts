@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { findPersonByEmail, findPersonByLinkedIn } from "../lib/attio.js";
 import {
@@ -16,9 +17,11 @@ import {
 } from "../lib/interested.js";
 import { describeShape, errorMessage, isJsonObject, stringValue, type JsonObject } from "../lib/json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface HeyReachInterestedFields {
   readonly profileUrl: string | null;
@@ -86,9 +89,11 @@ const MAX_CANDIDATES = 32;
 const HISTORY_UNAVAILABLE =
   "The message history could not be read from HeyReach when this lead was recorded, because the API rate limit had been reached. It is not lost - the conversation is still in HeyReach.";
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. The relay posts here when a lead replies or is auto-tagged positive.
@@ -167,11 +172,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//read the webhook=============================================================================================
+//=============================================================================================================
+//#region <read the webhook>
 
-//#region <read the webhook: find the lead>
+//#region <find the lead>
 //---------------------------------------------------------------------------------------------------------
 //Extracts the lead from a payload whose shape is not under our control.
 //FLOW: 1. leadCandidates ranks the objects to try. 2. readFields reads all five fields off one candidate.
@@ -249,7 +256,7 @@ function firstOf(source: JsonObject, keys: ReadonlySet<string>): string | null {
 }
 //#endregion
 
-//#region <read the webhook: match key names>
+//#region <match key names>
 /** The letters and digits of a key, so one entry covers every casing and separator a relay might spell it with. */
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -272,7 +279,7 @@ function namesSendingAccount(key: string): boolean {
 }
 //#endregion
 
-//#region <read the webhook: event name for logs>
+//#region <event name for logs>
 //---------------------------------------------------------------------------------------------------------
 //[DEBUG] What HeyReach called this delivery, read off the TOP LEVEL only.
 //
@@ -291,11 +298,13 @@ export function heyReachEventName(value: unknown): string | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record the interested lead===================================================================================
+//=============================================================================================================
+//#region <record the interested lead>
 
-//#region <record the interested lead: message history>
+//#region <message history>
 //---------------------------------------------------------------------------------------------------------
 //The lead's conversations, or nothing if HeyReach would not hand them over.
 //
@@ -337,7 +346,7 @@ export function formatHeyReachThread(messages: readonly HeyReachMessage[]): stri
 }
 //#endregion
 
-//#region <record the interested lead: shape for attio>
+//#region <shape for attio>
 //---------------------------------------------------------------------------------------------------------
 //The lead as the shared workflow sees it: the webhook body, plus whatever the conversation's correspondent
 //profile adds.
@@ -377,4 +386,5 @@ export function heyReachLead(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
