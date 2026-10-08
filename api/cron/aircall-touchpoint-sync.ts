@@ -1,3 +1,5 @@
+//imports======================================================================================================
+
 import { fetchAircallCallWindow, formatCallDuration, type AircallCall } from "../../lib/aircall.js";
 import { toE164 } from "../../lib/phone.js";
 import {
@@ -29,6 +31,10 @@ import { isAuthorizedCron, json, serverError } from "../../lib/http.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//=============================================================================================================
+
+//types and globals============================================================================================
+
 const SYNC_KEY = "aircall-touchpoints";
 
 //[STABILITY] How far back the API window must reach BEYOND the cursor.
@@ -49,61 +55,9 @@ const MAX_CALL_DURATION_MS = 2 * 60 * 60 * 1_000;
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
 
-/** Places a call on the cursor timeline by when it finished, not when it started. */
-export function aircallCursorEvent(call: AircallCall): CursorEvent {
-  return { id: String(call.id), timestampMs: (call.endedAt ?? call.startedAt) * 1_000 };
-}
+//=============================================================================================================
 
-//---------------------------------------------------------------------------------------------------------
-//Records one call as a touchpoint. Writes no Person note by design - the call lives in Aircall and the Person
-//only needs the count; the Company carries the note as the roll-up view.
-//FLOW: 1. normalise the number to E.164. 2. match a Person on it. 3. require Master TAM membership.
-//4. bump the Person counter. 5. if a Company is linked, note it and bump the Company counter.
-//USES: toE164 (lib/phone.ts); findPersonByPhone, isPersonInList, incrementCounter, createNote,
-//personCompanyId, personCounterSlug, companyCounterSlug (lib/attio.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function processAircallTouchpoint(call: AircallCall): Promise<ProcessingOutcome> {
-  //Attio stores E.164, so the punctuated raw_digits Aircall sends never matches a record as it stands.
-  const phone = toE164(call.rawDigits);
-  if (!phone) {
-    console.log(`[event] aircall touchpoint call ${call.id}: skipped - the call carried no phone number`);
-    return "skipped";
-  }
-
-  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
-  //beforeAnyWrite. incrementCounter below opens with a read too, but its PATCH is inside the same call, so a
-  //failure there cannot be told apart from a failure after it and stays on the pass-over path.
-  const person = await beforeAnyWrite(() => findPersonByPhone(phone));
-  if (!person) {
-    console.log(`[event] aircall touchpoint call ${call.id}: skipped - no Attio person has phone ${phone}`);
-    return "skipped";
-  }
-  const personId = person.id.record_id;
-  const personName = personLabel(person);
-  //Master TAM is the gate on counting anything: off-list people are read but never written to.
-  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
-    console.log(`[event] aircall touchpoint call ${call.id}: skipped - person ${personName} is not on the Master TAM list`);
-    return "not_tam";
-  }
-
-  const timestamp = new Date((call.endedAt ?? call.startedAt) * 1_000).toISOString();
-  const content = `**${timestamp}**\nDirection: ${call.direction ?? "unknown"}\nDuration: ${formatCallDuration(call.duration)}`;
-  const title = `Aircall Touchpoint — ${timestamp}`;
-  await incrementCounter("people", personId, personCounterSlug("aircall"), personName);
-
-  //A Person with no Company records only the counter increment; there is nowhere to hang the note.
-  const companyId = personCompanyId(person);
-  if (companyId) {
-    await createNote(
-      "companies",
-      companyId,
-      title,
-      `Aircall touchpoint with ${personDisplayName(person) ?? phone}:\n\n${content}`,
-    );
-    await incrementCounter("companies", companyId, companyCounterSlug("aircall"));
-  }
-  return "processed";
-}
+// ---------- RUN ----------
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every ten minutes (`*/10 * * * *`), under a wall-clock budget - see lib/run-budget.ts.
@@ -129,9 +83,6 @@ export async function processAircallTouchpoint(call: AircallCall): Promise<Proce
 //a transient failure before the first write, which is safe to attempt again precisely because nothing is
 //committed yet; that stops the run instead, and the next one starts on the call - see ThrottledBeforeWrite.
 //---------------------------------------------------------------------------------------------------------
-
-//==========================================================================
-//#region <main()>
 export async function GET(request: Request): Promise<Response> {
   //[SECURITY] Runs before any external call, so an unauthorized request costs nothing.
   if (!isAuthorizedCron(request)) return json({ error: "Unauthorized" }, 401);
@@ -181,8 +132,6 @@ export async function GET(request: Request): Promise<Response> {
     //a wide backlog spends real time there before the first call is ever processed.
     const budget = startRunBudget(upperBoundMs, "AIRCALL_SYNC_BUDGET_MS");
 
-    //==============================================================================
-    //#region <loop over all calls>
     for (const call of calls) {
       //[STABILITY] Checked before the call rather than after, so the budget is what remains for a whole call and
       //not what remains after one has already overrun it. Stopping here leaves `cursor` exactly where the last
@@ -225,8 +174,6 @@ export async function GET(request: Request): Promise<Response> {
       //above, before reaching this line.
       cursor = advanceCursor(cursor, event);
     }
-    //#endregion
-    //==============================================================================
     
     const callsRemaining = callCount - examinedCount;
     if (stopReason) {
@@ -284,5 +231,69 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 }
+
+// ---------------------------
+
+//record call touchpoints======================================================================================
+
+//#region <record call touchpoints: order calls>
+/** Places a call on the cursor timeline by when it finished, not when it started. */
+export function aircallCursorEvent(call: AircallCall): CursorEvent {
+  return { id: String(call.id), timestampMs: (call.endedAt ?? call.startedAt) * 1_000 };
+}
 //#endregion
-//==========================================================================
+
+//#region <record call touchpoints: write to attio>
+//---------------------------------------------------------------------------------------------------------
+//Records one call as a touchpoint. Writes no Person note by design - the call lives in Aircall and the Person
+//only needs the count; the Company carries the note as the roll-up view.
+//FLOW: 1. normalise the number to E.164. 2. match a Person on it. 3. require Master TAM membership.
+//4. bump the Person counter. 5. if a Company is linked, note it and bump the Company counter.
+//USES: toE164 (lib/phone.ts); findPersonByPhone, isPersonInList, incrementCounter, createNote,
+//personCompanyId, personCounterSlug, companyCounterSlug (lib/attio.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function processAircallTouchpoint(call: AircallCall): Promise<ProcessingOutcome> {
+  //Attio stores E.164, so the punctuated raw_digits Aircall sends never matches a record as it stands.
+  const phone = toE164(call.rawDigits);
+  if (!phone) {
+    console.log(`[event] aircall touchpoint call ${call.id}: skipped - the call carried no phone number`);
+    return "skipped";
+  }
+
+  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
+  //beforeAnyWrite. incrementCounter below opens with a read too, but its PATCH is inside the same call, so a
+  //failure there cannot be told apart from a failure after it and stays on the pass-over path.
+  const person = await beforeAnyWrite(() => findPersonByPhone(phone));
+  if (!person) {
+    console.log(`[event] aircall touchpoint call ${call.id}: skipped - no Attio person has phone ${phone}`);
+    return "skipped";
+  }
+  const personId = person.id.record_id;
+  const personName = personLabel(person);
+  //Master TAM is the gate on counting anything: off-list people are read but never written to.
+  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
+    console.log(`[event] aircall touchpoint call ${call.id}: skipped - person ${personName} is not on the Master TAM list`);
+    return "not_tam";
+  }
+
+  const timestamp = new Date((call.endedAt ?? call.startedAt) * 1_000).toISOString();
+  const content = `**${timestamp}**\nDirection: ${call.direction ?? "unknown"}\nDuration: ${formatCallDuration(call.duration)}`;
+  const title = `Aircall Touchpoint — ${timestamp}`;
+  await incrementCounter("people", personId, personCounterSlug("aircall"), personName);
+
+  //A Person with no Company records only the counter increment; there is nowhere to hang the note.
+  const companyId = personCompanyId(person);
+  if (companyId) {
+    await createNote(
+      "companies",
+      companyId,
+      title,
+      `Aircall touchpoint with ${personDisplayName(person) ?? phone}:\n\n${content}`,
+    );
+    await incrementCounter("companies", companyId, companyCounterSlug("aircall"));
+  }
+  return "processed";
+}
+//#endregion
+
+//=============================================================================================================
