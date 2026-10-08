@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import {
   beforeAnyWrite,
@@ -35,9 +36,11 @@ import { errorMessage } from "../../lib/json.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const SYNC_KEY = "heyreach-touchpoints";
 
@@ -49,9 +52,11 @@ export interface HeyReachTouchpointEvent {
   readonly cursor: CursorEvent;
 }
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -207,11 +212,13 @@ export async function GET(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//record message touchpoints===================================================================================
+//=============================================================================================================
+//#region <record message touchpoints>
 
-//#region <record message touchpoints: build message stream>
+//#region <build message stream>
 //---------------------------------------------------------------------------------------------------------
 //Flattens conversations into one chronological message stream with a stable ID per message.
 //HeyReach gives messages no ID of their own, so heyReachMessageId (lib/heyreach.ts) hashes the conversation
@@ -239,7 +246,7 @@ export async function heyReachTouchpointEvents(
 }
 //#endregion
 
-//#region <record message touchpoints: write to attio>
+//#region <write to attio>
 //---------------------------------------------------------------------------------------------------------
 //Records one LinkedIn message as a touchpoint on the Person and, when linked, the Company.
 //FLOW: 1. match a Person on the correspondent's profile URL. 2. require Master TAM membership. 3. note plus
@@ -293,4 +300,5 @@ export async function processHeyReachTouchpoint(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
