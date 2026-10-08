@@ -1,3 +1,5 @@
+//imports======================================================================================================
+
 import {
   beforeAnyWrite,
   companyCounterSlug,
@@ -33,6 +35,10 @@ import { errorMessage } from "../../lib/json.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//=============================================================================================================
+
+//types and globals============================================================================================
+
 const SYNC_KEY = "heyreach-touchpoints";
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
@@ -43,83 +49,9 @@ export interface HeyReachTouchpointEvent {
   readonly cursor: CursorEvent;
 }
 
-//---------------------------------------------------------------------------------------------------------
-//Flattens conversations into one chronological message stream with a stable ID per message.
-//HeyReach gives messages no ID of their own, so heyReachMessageId (lib/heyreach.ts) hashes the conversation
-//ID, timestamp, sender, subject, and body into one. Identical content in the same conversation at the same
-//instant collapses to one event, which is the correct outcome.
-//[PERF] Hashing is per message and the fetch returns whole days, so callers skip spent conversations first.
-//---------------------------------------------------------------------------------------------------------
-export async function heyReachTouchpointEvents(
-  conversations: readonly HeyReachConversation[],
-): Promise<readonly HeyReachTouchpointEvent[]> {
-  const events: HeyReachTouchpointEvent[] = [];
-  for (const conversation of conversations) {
-    for (const message of conversation.messages) {
-      events.push({
-        conversation,
-        message,
-        cursor: {
-          id: await heyReachMessageId(conversation, message),
-          timestampMs: Date.parse(message.createdAt),
-        },
-      });
-    }
-  }
-  return events.sort((left, right) => left.cursor.timestampMs - right.cursor.timestampMs);
-}
+//=============================================================================================================
 
-//---------------------------------------------------------------------------------------------------------
-//Records one LinkedIn message as a touchpoint on the Person and, when linked, the Company.
-//FLOW: 1. match a Person on the correspondent's profile URL. 2. require Master TAM membership. 3. note plus
-//counter on the Person. 4. note plus counter on the Company when one is linked.
-//USES: findPersonByLinkedIn, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
-//companyCounterSlug (lib/attio.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function processHeyReachTouchpoint(
-  event: HeyReachTouchpointEvent,
-): Promise<ProcessingOutcome> {
-  //The correspondent is the lead. The sending LinkedIn account is never matched on - that would attach the
-  //touchpoint to our own sender.
-  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
-  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
-  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
-  const person = await beforeAnyWrite(() => findPersonByLinkedIn(event.conversation.profile.profileUrl));
-  if (!person) {
-    console.log(
-      `[event] heyreach message ${event.cursor.id}: skipped - no Attio person has ${event.conversation.profile.profileUrl}`,
-    );
-    return "skipped";
-  }
-  const personId = person.id.record_id;
-  const personName = personLabel(person);
-  //Master TAM is the gate on counting anything: off-list people are read but never written to.
-  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
-    console.log(
-      `[event] heyreach message ${event.cursor.id}: skipped - person ${personName} is not on the Master TAM list`,
-    );
-    return "not_tam";
-  }
-
-  const profile = event.conversation.profile;
-  const leadName = `${profile.firstName ?? ""} ${profile.lastName ?? ""}`.trim() || "HeyReach conversation";
-  const title = `${event.message.subject ?? leadName} — ${event.message.createdAt}`;
-  const body = event.message.body || "(no message content)";
-  await createNote("people", personId, title, body, personName);
-  await incrementCounter("people", personId, personCounterSlug("heyreach"), personName);
-
-  const companyId = personCompanyId(person);
-  if (companyId) {
-    await createNote(
-      "companies",
-      companyId,
-      title,
-      `HeyReach message with ${personDisplayName(person) ?? leadName}:\n\n${body}`,
-    );
-    await incrementCounter("companies", companyId, companyCounterSlug("heyreach"));
-  }
-  return "processed";
-}
+// ---------- RUN ----------
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -274,3 +206,91 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 }
+
+// ---------------------------
+
+//record message touchpoints===================================================================================
+
+//#region <record message touchpoints: build message stream>
+//---------------------------------------------------------------------------------------------------------
+//Flattens conversations into one chronological message stream with a stable ID per message.
+//HeyReach gives messages no ID of their own, so heyReachMessageId (lib/heyreach.ts) hashes the conversation
+//ID, timestamp, sender, subject, and body into one. Identical content in the same conversation at the same
+//instant collapses to one event, which is the correct outcome.
+//[PERF] Hashing is per message and the fetch returns whole days, so callers skip spent conversations first.
+//---------------------------------------------------------------------------------------------------------
+export async function heyReachTouchpointEvents(
+  conversations: readonly HeyReachConversation[],
+): Promise<readonly HeyReachTouchpointEvent[]> {
+  const events: HeyReachTouchpointEvent[] = [];
+  for (const conversation of conversations) {
+    for (const message of conversation.messages) {
+      events.push({
+        conversation,
+        message,
+        cursor: {
+          id: await heyReachMessageId(conversation, message),
+          timestampMs: Date.parse(message.createdAt),
+        },
+      });
+    }
+  }
+  return events.sort((left, right) => left.cursor.timestampMs - right.cursor.timestampMs);
+}
+//#endregion
+
+//#region <record message touchpoints: write to attio>
+//---------------------------------------------------------------------------------------------------------
+//Records one LinkedIn message as a touchpoint on the Person and, when linked, the Company.
+//FLOW: 1. match a Person on the correspondent's profile URL. 2. require Master TAM membership. 3. note plus
+//counter on the Person. 4. note plus counter on the Company when one is linked.
+//USES: findPersonByLinkedIn, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
+//companyCounterSlug (lib/attio.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function processHeyReachTouchpoint(
+  event: HeyReachTouchpointEvent,
+): Promise<ProcessingOutcome> {
+  //The correspondent is the lead. The sending LinkedIn account is never matched on - that would attach the
+  //touchpoint to our own sender.
+  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
+  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
+  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
+  const person = await beforeAnyWrite(() => findPersonByLinkedIn(event.conversation.profile.profileUrl));
+  if (!person) {
+    console.log(
+      `[event] heyreach message ${event.cursor.id}: skipped - no Attio person has ${event.conversation.profile.profileUrl}`,
+    );
+    return "skipped";
+  }
+  const personId = person.id.record_id;
+  const personName = personLabel(person);
+  //Master TAM is the gate on counting anything: off-list people are read but never written to.
+  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
+    console.log(
+      `[event] heyreach message ${event.cursor.id}: skipped - person ${personName} is not on the Master TAM list`,
+    );
+    return "not_tam";
+  }
+
+  const profile = event.conversation.profile;
+  const leadName = `${profile.firstName ?? ""} ${profile.lastName ?? ""}`.trim() || "HeyReach conversation";
+  const title = `${event.message.subject ?? leadName} — ${event.message.createdAt}`;
+  const body = event.message.body || "(no message content)";
+  await createNote("people", personId, title, body, personName);
+  await incrementCounter("people", personId, personCounterSlug("heyreach"), personName);
+
+  const companyId = personCompanyId(person);
+  if (companyId) {
+    await createNote(
+      "companies",
+      companyId,
+      title,
+      `HeyReach message with ${personDisplayName(person) ?? leadName}:\n\n${body}`,
+    );
+    await incrementCounter("companies", companyId, companyCounterSlug("heyreach"));
+  }
+  return "processed";
+}
+//#endregion
+
+//=============================================================================================================
