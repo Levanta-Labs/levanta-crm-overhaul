@@ -6,18 +6,21 @@ script purpose
 
 */
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export type JsonObject = Record<string, unknown>; //an object with string keys, unknown value type
 //type any //do whatever you want, disables type constraints
 //ype unknown //type checking is enabled but type is unknown, is one from set of all possible values in ts, can check type using logic for operations
 //type 
 
+//#endregion
 //=============================================================================================================
 
-//read unknown json values=====================================================================================
+//=============================================================================================================
+//#region <read unknown json values>
 
-//#region <read unknown json values: type guards>
+//#region <type guards>
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -45,7 +48,7 @@ export function arrayValue(parent: JsonObject, key: string): readonly unknown[] 
 }
 //#endregion
 
-//#region <read unknown json values: describe a payload shape>
+//#region <describe a payload shape>
 /**
  * The key structure of an unknown payload, with types but no values, so an unrecognised webhook shape can be
  * mapped from a log line without recording anybody's name, address, or message text.
@@ -69,17 +72,19 @@ export function describeShape(value: unknown, depth = 2, budget = 8): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read responses and errors====================================================================================
+//=============================================================================================================
+//#region <read responses and errors>
 
-//#region <read responses and errors: error messages>
+//#region <error messages>
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
 //#endregion
 
-//#region <read responses and errors: response bodies>
+//#region <response bodies>
 export async function responseJson(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
@@ -91,4 +96,5 @@ export async function responseJson(response: Response): Promise<unknown> {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
