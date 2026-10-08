@@ -7,7 +7,8 @@
 //outbound platform. The provider modules keep only what is genuinely theirs - parsing their own payload, and
 //rendering their own message history into a note.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import {
   addPersonToList,
@@ -45,9 +46,11 @@ import {
 //debug note in attio=
 import { runLogApplied, runLogRecord, withRunLog } from "./run-log.js"; //the tool that writes down what this run did
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 //---------------------------------------------------------------------------------------------------------
 //Every field any provider can supply about an interested lead. A provider that cannot supply one passes null,
@@ -269,11 +272,13 @@ const ATTIO_DNC_CHANNEL: SuppressionChannel = {
 //again days later still earns a fresh note. Overridable per deployment without a redeploy.
 export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000;
 
+//#endregion
 //=============================================================================================================
 
-//build the normalised lead====================================================================================
+//=============================================================================================================
+//#region <build the normalised lead>
 
-//#region <build the normalised lead: default every field>
+//#region <default every field>
 /**
  * [LOGIC] Defaults every field, so a provider's extractor names only what it actually has. Absent means null,
  * and null never reaches Attio - see updateAttioAttributes.
@@ -306,9 +311,11 @@ export function interestedLead(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//format values for attio======================================================================================
+//=============================================================================================================
+//#region <format values for attio>
 
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] Provider values into the exact shape one Attio attribute type accepts.
@@ -316,7 +323,7 @@ export function interestedLead(
 //recoverable; a confidently wrong value is not, because nothing downstream will ever overwrite it.
 //---------------------------------------------------------------------------------------------------------
 
-//#region <format values for attio: counts and buckets>
+//#region <counts and buckets>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] A count out of a number written any way a provider might write it.
 //FLOW: 1. drop currency symbols, spaces, and thousands separators. 2. a range ("50-100", "1K-5K") keeps its
@@ -371,7 +378,7 @@ export function toArrBucket(value: string | null): string | null {
 }
 //#endregion
 
-//#region <format values for attio: domains>
+//#region <domains>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] A hostname out of whatever a provider called a website, or null if it is not this company's own.
 //FLOW: 1. no input -> null. 2. parse as a URL so a path, port, or query cannot survive. 3. lowercase and drop
@@ -404,7 +411,7 @@ export function toDomain(value: string | null): string | null {
 }
 //#endregion
 
-//#region <format values for attio: postal addresses>
+//#region <postal addresses>
 //---------------------------------------------------------------------------------------------------------
 //A comma-separated postal address into Attio's structured location.
 //Providers send "<street>, <city>, <region>, <country>, <postcode>" - country second to last, postcode last -
@@ -454,7 +461,7 @@ export function parsePostalAddress(value: string | null): AttioLocation | null {
 }
 //#endregion
 
-//#region <format values for attio: dates and times>
+//#region <dates and times>
 /** An epoch-millisecond instant as an Attio timestamp, or null when the caller had no time to give. */
 export function toTimestamp(ms: number | null): string | null {
   if (ms === null || !Number.isFinite(ms)) return null;
@@ -468,11 +475,13 @@ export function toDate(ms: number | null): string | null {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//write attributes to attio====================================================================================
+//=============================================================================================================
+//#region <write attributes to attio>
 
-//#region <write attributes to attio: merge multiselects>
+//#region <merge multiselects>
 /**
  * [LOGIC] The scalars an attribute currently holds, or null if ANY entry could not be read. All-or-nothing on
  * purpose: a partial read is what would silently delete the entries it failed to see - see mergeMultiselect.
@@ -529,7 +538,7 @@ function mergeMultiselect(
 }
 //#endregion
 
-//#region <write attributes to attio: drop empty values>
+//#region <drop empty values>
 /** [LOGIC] Nothing worth writing: absent, blank, or an empty list. Distinct from a value Attio already holds. */
 function isEmptyCandidate(value: unknown): boolean {
   if (value === undefined || value === null) return true;
@@ -551,7 +560,7 @@ function withoutEmpty(values: Record<string, unknown>): AttioValues {
 }
 //#endregion
 
-//#region <write attributes to attio: patch records>
+//#region <patch records>
 //---------------------------------------------------------------------------------------------------------
 //Writes the fillable attributes, salvaging as many as Attio will take.
 //FLOW: 1. one PATCH with all of them, which is the normal case and the only request usually made. 2. if that
@@ -671,9 +680,11 @@ export async function updateAttioAttributes(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//map a lead onto attio values=================================================================================
+//=============================================================================================================
+//#region <map a lead onto attio values>
 
 //---------------------------------------------------------------------------------------------------------
 //Which provider field lands on which Attio slug. Pure, so the mapping is testable without a network, and in
@@ -681,7 +692,7 @@ export async function updateAttioAttributes(
 //A slug absent from these three objects is a slug these workflows never write.
 //---------------------------------------------------------------------------------------------------------
 
-//#region <map a lead onto attio values: person, company, deal>
+//#region <person, company, deal>
 /** [LOGIC] USES: attributionValues (lib/providers.ts); toDate, withoutEmpty (this module). Pure. */
 export function personValuesFor(lead: InterestedLead, companyId: string | null = null): AttioValues {
   const values: Record<string, unknown> = {
@@ -754,11 +765,13 @@ export function dealValuesFor(lead: InterestedLead): AttioValues {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//resolve the company and name the deal========================================================================
+//=============================================================================================================
+//#region <resolve the company and name the deal>
 
-//#region <resolve the company and name the deal: company>
+//#region <company>
 //---------------------------------------------------------------------------------------------------------
 //The company an interested lead belongs to, found or created, and enriched in passing.
 //FLOW: 1. the person is already linked to one -> that one wins, whatever the provider says. 2. otherwise look
@@ -814,7 +827,7 @@ export async function resolveInterestedCompany(
 }
 //#endregion
 
-//#region <resolve the company and name the deal: deal name>
+//#region <deal name>
 //---------------------------------------------------------------------------------------------------------
 //What a deal this codebase opens is called. Strictly the company name, with no other form.
 //The convention is strict so a person's name never becomes a deal name: a deal belongs to a company even when
@@ -835,11 +848,13 @@ export function interestedDealName(companyName: string | null): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//suppress the lead everywhere=================================================================================
+//=============================================================================================================
+//#region <suppress the lead everywhere>
 
-//#region <suppress the lead everywhere: every channel>
+//#region <every channel>
 //---------------------------------------------------------------------------------------------------------
 //Stops every outbound channel contacting a lead who has already said yes. One function, called by every
 //interested workflow, because interest is a fact about the person and not about the channel that found it: a
@@ -892,9 +907,11 @@ export async function suppressInterestedLead(targets: SuppressionTargets): Promi
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//decline repeated events======================================================================================
+//=============================================================================================================
+//#region <decline repeated events>
 
 //WHY THIS EXISTS. Attio offers no idempotency key and no upsert for notes - createNote (lib/attio.ts) appends,
 //so the same event arriving twice leaves two identical notes on the Person and two on the Deal, plus a
@@ -919,7 +936,7 @@ export async function suppressInterestedLead(targets: SuppressionTargets): Promi
 //give us. The same gap already lets two simultaneous events create two Person records, which predates this
 //check and is not addressed by it.
 
-//#region <decline repeated events: duplicate window>
+//#region <duplicate window>
 //---------------------------------------------------------------------------------------------------------
 //[STABILITY] A malformed value falls back rather than throwing, matching budgetMs (lib/run-budget.ts): losing
 //the override is a tuning problem, losing the event is a data problem. Zero is honoured as "off", because
@@ -943,7 +960,7 @@ function duplicateWindowMs(): number {
 }
 //#endregion
 
-//#region <decline repeated events: repeat check>
+//#region <repeat check>
 //---------------------------------------------------------------------------------------------------------
 //Whether this person already carries `title` from inside the window.
 //FLOW: 1. window of zero -> the check is off, nothing is read. 2. list the person's notes. 3. match on title
@@ -1007,11 +1024,13 @@ function duplicateOutcome(person: AttioPerson, personName: string): InterestedOu
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record an interested lead====================================================================================
+//=============================================================================================================
+//#region <record an interested lead>
 
-//#region <record an interested lead: shared workflow>
+//#region <shared workflow>
 //---------------------------------------------------------------------------------------------------------
 //Records an interested lead in Attio. Every provider's route or cron ends here, and this is the whole of what
 //they share - so a fourth platform needs an extractor, a lookup, and a note renderer, and inherits the rest.
@@ -1123,4 +1142,5 @@ async function runInterestedLead(workflow: InterestedWorkflow): Promise<Interest
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
