@@ -2,15 +2,18 @@
 //diagnosable from the Vercel logs. Secret VALUES are never logged - only whether they are set, how long they
 //are, and whether the stored value carried surrounding whitespace.
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const reported = new Set<string>();
 
+//#endregion
 //=============================================================================================================
 
-//read environment variables===================================================================================
+//=============================================================================================================
+//#region <read environment variables>
 
-//#region <read environment variables: values>
+//#region <values>
 export function optionalEnv(name: string): string | null {
   const raw = process.env[name];
   reportEnv(name, raw);
@@ -61,11 +64,13 @@ export function requiredCsvEnv(name: string): readonly string[] {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//report configuration to the logs=============================================================================
+//=============================================================================================================
+//#region <report configuration to the logs>
 
-//#region <report configuration to the logs: once per process>
+//#region <once per process>
 function reportOnce(key: string, log: () => void): void {
   if (reported.has(key)) return;
   reported.add(key);
@@ -100,7 +105,7 @@ export function resetEnvReporting(): void {
 }
 //#endregion
 
-//#region <report configuration to the logs: config values>
+//#region <config values>
 /**
  * Prints a non-secret configuration value in full. Only for identifiers whose exact content is needed to spot a
  * mistake and whose exposure is harmless: attribute slugs and service URLs. Never pass a key, token, or secret.
@@ -121,4 +126,5 @@ export function reportConfigEmail(name: string, value: string): void {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
