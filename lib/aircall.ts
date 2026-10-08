@@ -1,5 +1,5 @@
-//========================================================================================
-//#region <import statements>
+//imports======================================================================================================
+
 import { AIRCALL_BASE, aircallAuthHeader, credentialHint } from "./endpoints.js";
 import { rateLimitWaitMs } from "./http.js";
 //Aircall spells a number for display ("+1 949-735-4000"); Attio matches E.164. One shared normaliser, because
@@ -14,11 +14,9 @@ import {
   stringValue,
 } from "./json.js";
 
-//#endregion
-//==========================================================================================
+//=============================================================================================================
 
-//=====================================================================================================
-//#region <Interfaces>
+//types and globals============================================================================================
 
 export interface AircallTag {
   readonly name: string;
@@ -59,12 +57,32 @@ export interface AircallCampaignContact {
   readonly note: string | null; //free text supplied with the contact
 }
 
-//#endregion
-//================================================================
+export interface AircallCallWindow {
+  readonly calls: readonly AircallCall[];
+  /** Set when pagination stopped short of the end of the window; null means it was read to the end. */
+  readonly stoppedBy: "throttled" | null;
+  readonly pagesRead: number;
+}
 
-//====================================================================================================
-//#region <Parcer Functions>
+export class AircallRateLimitError extends Error {
+  constructor(detail: string) {
+    super(`Aircall rate limit reached: ${detail}`);
+    this.name = "AircallRateLimitError";
+  }
+}
 
+const RATE_LIMIT_ATTEMPTS = 3;
+//Matches attioFetch's RETRY_BASE_MS, so the one backoff shape in this codebase stays one shape.
+const RATE_LIMIT_BASE_MS = 500;
+//[PERF] A run that spends its budget asleep has done nothing. Past this, stopping and resuming next run beats
+//waiting - the next run starts with a fresh allowance either way. See rateLimitWaitMs (lib/http.ts).
+const RATE_LIMIT_MAX_WAIT_MS = 5_000;
+
+//=============================================================================================================
+
+//parse aircall responses======================================================================================
+
+//#region <parse aircall responses: calls>
 function parseTag(value: unknown): AircallTag | null {
   if (!isJsonObject(value)) return null;
   const name = stringValue(value.name);
@@ -105,26 +123,9 @@ export function parseAircallCall(value: unknown): AircallCall {
     contact: parseContact(value.contact),
   };
 }
-
-//Turns one raw campaign contact into an AircallCampaignContact. Null when it is not an object.
-function parseCampaignContact(value: unknown): AircallCampaignContact | null {
-  if (!isJsonObject(value)) return null; //nothing readable, no contact
-  return {
-    phoneNumber: toE164(stringValue(value.phone_number)), //"12158888732" -> "+12158888732"
-    firstName: stringValue(value.first_name), //null when blank
-    lastName: stringValue(value.last_name), //null when blank
-    email: stringValue(value.email), //null when blank
-    companyName: stringValue(value.company_name), //null when blank
-    note: stringValue(value.note), //null when blank
-  };
-}
 //#endregion
-//========================================================================================================
 
-
-//==================================================================================
-//#region <functions for extracting contact identifiers for attio match>
-
+//#region <parse aircall responses: contact fields>
 /** Every number on a contact, normalised. Aircall lists them as objects; a stray string is accepted too. */
 function contactPhoneNumbers(contact: Record<string, unknown>): readonly string[] {
   const numbers: string[] = [];
@@ -150,25 +151,27 @@ function contactEmail(contact: Record<string, unknown>): string | null {
   }
   return null;
 }
-
 //#endregion
-//=======================================================================================
 
+//#region <parse aircall responses: campaign contacts>
+//Turns one raw campaign contact into an AircallCampaignContact. Null when it is not an object.
+function parseCampaignContact(value: unknown): AircallCampaignContact | null {
+  if (!isJsonObject(value)) return null; //nothing readable, no contact
+  return {
+    phoneNumber: toE164(stringValue(value.phone_number)), //"12158888732" -> "+12158888732"
+    firstName: stringValue(value.first_name), //null when blank
+    lastName: stringValue(value.last_name), //null when blank
+    email: stringValue(value.email), //null when blank
+    companyName: stringValue(value.company_name), //null when blank
+    note: stringValue(value.note), //null when blank
+  };
+}
+//#endregion
 
-//---------------------------------------------------------------------------------------------------------
-//Reads every completed call in a window. The touchpoint cron is the only caller.
-//FLOW: 1. build page one from fromMs/toMs. 2. follow meta.next_page_link until null. 3. parse each entry with
-//parseAircallCall. 4. drop anything not finished.
-//WINDOW SEMANTICS - the reason the caller over-reaches: Aircall documents from/to as filters on a call's
-//CREATION date, and the Call object carries no created_at at all (only started_at, answered_at, ended_at), so
-//the filter is effectively on call START. Callers key their cursor on ended_at, so fromMs must be pulled back
-//by at least the longest call expected or a long call is filtered out here (not yet "done") on the run that
-//covers its start and is out of range by the run that covers its end. See MAX_CALL_DURATION_MS in the cron.
-//Sorting cannot substitute for this: `order` only walks created_at, and a call outside the filter is absent
-//from the result set entirely, not merely out of order. No v1 endpoint filters or sorts on ended_at.
-//USES: aircallAuthHeader, credentialHint (lib/endpoints.ts); responseJson, arrayValue, objectValue (lib/json.ts).
-//---------------------------------------------------------------------------------------------------------
 //=============================================================================================================
+
+//aircall transport============================================================================================
+
 //Rate limiting.
 //
 //Aircall allows 120 requests a minute PER COMPANY, not per key - so every integration the workspace runs draws
@@ -180,22 +183,8 @@ function contactEmail(contact: Record<string, unknown>): string | null {
 //transport can only react to the refusal. Contrast Instantly, which gets a page cap because its
 //20-per-minute ceiling is a documented hard figure.
 //A refused request was not processed, so repeating it cannot apply anything twice.
-//=============================================================================================================
 
-export class AircallRateLimitError extends Error {
-  constructor(detail: string) {
-    super(`Aircall rate limit reached: ${detail}`);
-    this.name = "AircallRateLimitError";
-  }
-}
-
-const RATE_LIMIT_ATTEMPTS = 3;
-//Matches attioFetch's RETRY_BASE_MS, so the one backoff shape in this codebase stays one shape.
-const RATE_LIMIT_BASE_MS = 500;
-//[PERF] A run that spends its budget asleep has done nothing. Past this, stopping and resuming next run beats
-//waiting - the next run starts with a fresh allowance either way. See rateLimitWaitMs (lib/http.ts).
-const RATE_LIMIT_MAX_WAIT_MS = 5_000;
-
+//#region <aircall transport: rate limiting>
 /**
  * [LOGIC] Aircall's own reset header, in ms from now. Documented only as "timestamp when the counter will be
  * reset" with no unit, so both readings are accepted: a value that looks like epoch SECONDS is treated as one,
@@ -214,7 +203,9 @@ function aircallResetMs(response: Response): number | null {
   //A whole minute is the widest a per-minute window can legitimately be.
   return waitMs > 0 && waitMs <= 60_000 ? waitMs : null;
 }
+//#endregion
 
+//#region <aircall transport: requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every Aircall call. Nothing else in this module calls fetch.
 //FLOW: 1. GET the absolute url. 2. 429 with attempts left -> wait and repeat. 3. 429 out of attempts ->
@@ -254,14 +245,26 @@ async function aircallFetch(url: string): Promise<unknown> {
     );
   }
 }
+//#endregion
 
-export interface AircallCallWindow {
-  readonly calls: readonly AircallCall[];
-  /** Set when pagination stopped short of the end of the window; null means it was read to the end. */
-  readonly stoppedBy: "throttled" | null;
-  readonly pagesRead: number;
-}
+//=============================================================================================================
 
+//read calls and contacts======================================================================================
+
+//#region <read calls and contacts: call windows>
+//---------------------------------------------------------------------------------------------------------
+//Reads every completed call in a window. The touchpoint cron is the only caller.
+//FLOW: 1. build page one from fromMs/toMs. 2. follow meta.next_page_link until null. 3. parse each entry with
+//parseAircallCall. 4. drop anything not finished.
+//WINDOW SEMANTICS - the reason the caller over-reaches: Aircall documents from/to as filters on a call's
+//CREATION date, and the Call object carries no created_at at all (only started_at, answered_at, ended_at), so
+//the filter is effectively on call START. Callers key their cursor on ended_at, so fromMs must be pulled back
+//by at least the longest call expected or a long call is filtered out here (not yet "done") on the run that
+//covers its start and is out of range by the run that covers its end. See MAX_CALL_DURATION_MS in the cron.
+//Sorting cannot substitute for this: `order` only walks created_at, and a call outside the filter is absent
+//from the result set entirely, not merely out of order. No v1 endpoint filters or sorts on ended_at.
+//USES: aircallAuthHeader, credentialHint (lib/endpoints.ts); responseJson, arrayValue, objectValue (lib/json.ts).
+//---------------------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------------------
 //The paginating form, which keeps what it read when Aircall refuses the rest.
 //
@@ -322,7 +325,9 @@ export async function fetchAircallCalls(fromMs: number, toMs: number): Promise<r
   }
   return calls;
 }
+//#endregion
 
+//#region <read calls and contacts: single records>
 //Reads one call by its id. Throws if Aircall refuses or returns something unreadable.
 export async function fetchAircallCall(callId: number): Promise<AircallCall> {
   const body = await aircallFetch(`${AIRCALL_BASE}/calls/${callId}`); //GET /v1/calls/{id}
@@ -338,7 +343,13 @@ export async function fetchCampaignContact(campaignId: string, phone: string): P
   if (!isJsonObject(body)) throw new Error("Aircall campaign contacts response is invalid"); //not an object
   return parseCampaignContact(arrayValue(body, "contacts")[0]); //at most one; missing becomes null
 }
+//#endregion
 
+//=============================================================================================================
+
+//format for notes=============================================================================================
+
+//#region <format for notes: duration>
 //---------------------------------------------------------------------------------------------------------
 //A call's length for a note. Whole minutes are the wrong unit for this data: `duration` counts ring time as
 //well as talk time, and on a dialled campaign a median call runs about 18 seconds, so rounding to minutes
@@ -356,3 +367,6 @@ export function formatCallDuration(seconds: number): string {
   if (minutes === 0) return `${remainder}s`;
   return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
 }
+//#endregion
+
+//=============================================================================================================
