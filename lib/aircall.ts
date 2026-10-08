@@ -1,3 +1,5 @@
+//========================================================================================
+//#region <import statements>
 import { AIRCALL_BASE, aircallAuthHeader, credentialHint } from "./endpoints.js";
 import { rateLimitWaitMs } from "./http.js";
 //Aircall spells a number for display ("+1 949-735-4000"); Attio matches E.164. One shared normaliser, because
@@ -12,9 +14,11 @@ import {
   stringValue,
 } from "./json.js";
 
+//#endregion
+//==========================================================================================
+
 //=====================================================================================================
-//Interfaces
-//=====================================================================================================
+//#region <Interfaces>
 
 export interface AircallTag {
   readonly name: string;
@@ -44,40 +48,28 @@ export interface AircallCall {
   readonly contact: AircallContact | null;
 }
 
+//A contact as a campaign holds it. Richer than AircallCall.contact, which is only set when the dialled
+//number is already in Aircall's address book - usually not, for a cold campaign.
+export interface AircallCampaignContact {
+  readonly phoneNumber: string | null; //E.164, normalised from Aircall's bare digits
+  readonly firstName: string | null; //contact's first name
+  readonly lastName: string | null; //contact's last name
+  readonly email: string | null; //contact's email
+  readonly companyName: string | null; //contact's company
+  readonly note: string | null; //free text supplied with the contact
+}
+
+//#endregion
+//================================================================
+
+//====================================================================================================
+//#region <Parcer Functions>
+
 function parseTag(value: unknown): AircallTag | null {
   if (!isJsonObject(value)) return null;
   const name = stringValue(value.name);
   return name ? { name } : null;
 }
-
-/** Every number on a contact, normalised. Aircall lists them as objects; a stray string is accepted too. */
-function contactPhoneNumbers(contact: Record<string, unknown>): readonly string[] {
-  const numbers: string[] = [];
-  for (const candidate of arrayValue(contact, "phone_numbers")) {
-    const raw = typeof candidate === "string" ? candidate : isJsonObject(candidate) ? stringValue(candidate.value) : null;
-    const e164 = toE164(raw);
-    if (e164 && !numbers.includes(e164)) numbers.push(e164);
-  }
-  return numbers;
-}
-
-function contactEmail(contact: Record<string, unknown>): string | null {
-  //Aircall spells a contact address two ways: a scalar `email`, or an `emails` list of strings or of objects.
-  const direct = stringValue(contact.email);
-  if (direct) return direct;
-  for (const candidate of arrayValue(contact, "emails")) {
-    if (typeof candidate === "string" && candidate) return candidate;
-    if (isJsonObject(candidate)) {
-      const value = stringValue(candidate.value) ?? stringValue(candidate.email);
-      if (value) return value;
-    }
-  }
-  return null;
-}
-
-//====================================================================================================
-//parce functions, turn aircall raw api pull into usable data
-//====================================================================================================
 
 function parseContact(value: unknown): AircallContact | null {
   if (!isJsonObject(value)) return null;
@@ -114,8 +106,57 @@ export function parseAircallCall(value: unknown): AircallCall {
   };
 }
 
+//Turns one raw campaign contact into an AircallCampaignContact. Null when it is not an object.
+function parseCampaignContact(value: unknown): AircallCampaignContact | null {
+  if (!isJsonObject(value)) return null; //nothing readable, no contact
+  return {
+    phoneNumber: toE164(stringValue(value.phone_number)), //"12158888732" -> "+12158888732"
+    firstName: stringValue(value.first_name), //null when blank
+    lastName: stringValue(value.last_name), //null when blank
+    email: stringValue(value.email), //null when blank
+    companyName: stringValue(value.company_name), //null when blank
+    note: stringValue(value.note), //null when blank
+  };
+}
+//#endregion
+//========================================================================================================
+
+
+//==================================================================================
+//#region <functions for extracting contact identifiers for attio match>
+
+/** Every number on a contact, normalised. Aircall lists them as objects; a stray string is accepted too. */
+function contactPhoneNumbers(contact: Record<string, unknown>): readonly string[] {
+  const numbers: string[] = [];
+  for (const candidate of arrayValue(contact, "phone_numbers")) {
+    const raw = typeof candidate === "string" ? candidate : isJsonObject(candidate) ? stringValue(candidate.value) : null;
+    const e164 = toE164(raw);
+    if (e164 && !numbers.includes(e164)) numbers.push(e164);
+  }
+  return numbers;
+}
+
+//returns contact email address if there is one
+function contactEmail(contact: Record<string, unknown>): string | null {
+  //Aircall spells a contact address two ways: a scalar `email`, or an `emails` list of strings or of objects.
+  const direct = stringValue(contact.email);
+  if (direct) return direct;
+  for (const candidate of arrayValue(contact, "emails")) {
+    if (typeof candidate === "string" && candidate) return candidate;
+    if (isJsonObject(candidate)) {
+      const value = stringValue(candidate.value) ?? stringValue(candidate.email);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+//#endregion
+//=======================================================================================
+
+
 //---------------------------------------------------------------------------------------------------------
-//Reads every completed call in a window. Sole Aircall reader; the touchpoint cron is the only caller.
+//Reads every completed call in a window. The touchpoint cron is the only caller.
 //FLOW: 1. build page one from fromMs/toMs. 2. follow meta.next_page_link until null. 3. parse each entry with
 //parseAircallCall. 4. drop anything not finished.
 //WINDOW SEMANTICS - the reason the caller over-reaches: Aircall documents from/to as filters on a call's
@@ -280,6 +321,22 @@ export async function fetchAircallCalls(fromMs: number, toMs: number): Promise<r
     throw new AircallRateLimitError(`only ${calls.length} call(s) of this window could be read`);
   }
   return calls;
+}
+
+//Reads one call by its id. Throws if Aircall refuses or returns something unreadable.
+export async function fetchAircallCall(callId: number): Promise<AircallCall> {
+  const body = await aircallFetch(`${AIRCALL_BASE}/calls/${callId}`); //GET /v1/calls/{id}
+  if (!isJsonObject(body)) throw new Error("Aircall call response is invalid"); //not an object
+  return parseAircallCall(body.call); //the call sits under "call"
+}
+
+//Reads the one contact a campaign holds for a phone number. Null when the campaign has none.
+export async function fetchCampaignContact(campaignId: string, phone: string): Promise<AircallCampaignContact | null> {
+  const url = new URL(`${AIRCALL_BASE}/campaigns/${campaignId}/contacts`); //GET /v1/campaigns/{id}/contacts
+  url.searchParams.set("phone_number", phone); //filter to this number; "+" is encoded for us
+  const body = await aircallFetch(url.toString()); //throws on any non-2xx
+  if (!isJsonObject(body)) throw new Error("Aircall campaign contacts response is invalid"); //not an object
+  return parseCampaignContact(arrayValue(body, "contacts")[0]); //at most one; missing becomes null
 }
 
 //---------------------------------------------------------------------------------------------------------

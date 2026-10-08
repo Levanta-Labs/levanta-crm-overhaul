@@ -7,7 +7,6 @@ const envNames = [
   "SUPABASE_SECRET_KEY",
   "AIRCALL_API_ID",
   "AIRCALL_API_TOKEN",
-  "AIRCALL_INTERESTED_TAGS",
   "CRON_SECRET",
   "ATTIO_API_KEY",
   "ATTIO_PERSON_AIRCALL_COUNTER_SLUG",
@@ -20,7 +19,6 @@ beforeEach(() => {
   process.env.SUPABASE_SECRET_KEY = "sb_secret_test";
   process.env.AIRCALL_API_ID = "aircall-id";
   process.env.AIRCALL_API_TOKEN = "aircall-token";
-  process.env.AIRCALL_INTERESTED_TAGS = "Booked, Connected";
   process.env.CRON_SECRET = "cron-secret";
   process.env.ATTIO_API_KEY = "attio-key";
   process.env.ATTIO_PERSON_AIRCALL_COUNTER_SLUG = "number_of_calls";

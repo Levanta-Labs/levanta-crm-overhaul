@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   buildCallHistorySummary,
   extractAircallFields,
-} from "../../lib/aircall-interested.js";
+  isInterestedOutcome,
+  parseAircallOutcomeWebhook,
+} from "../../api/aircall-interested.js";
 import { aircallCursorEvent } from "../../api/cron/aircall-touchpoint-sync.js";
 import { heyReachTouchpointEvents } from "../../api/cron/heyreach-touchpoint-sync.js";
 import { instantlyCursorEvent } from "../../api/cron/instantly-touchpoint-sync.js";
@@ -24,16 +26,92 @@ describe("interested workflows", () => {
       id: 1,
       status: "done",
       direction: "outbound",
-      raw_digits: "+15555550123",
+      raw_digits: "+1 555-555-0123",
       started_at: 1_700_000_000,
       ended_at: 1_700_000_120,
       duration: 120,
-      tags: [{ name: "Booked" }],
       contact: { first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" },
     });
-    const fields = extractAircallFields(call, 1_700_000_121);
+    const fields = extractAircallFields(call, null, "Booked");
+    //With no campaign contact, the call's own address-book contact fills in.
+    expect(fields).toMatchObject({ email: "ada@example.com", firstName: "Ada", phones: ["+15555550123"] });
+    //The call's completion, not its start, dates the interaction.
+    expect(fields.occurredAt).toBe(1_700_000_120);
     expect(buildCallHistorySummary(fields)).toContain("Duration: 2m");
-    expect(buildCallHistorySummary(fields)).toContain("Tags: Booked");
+    expect(buildCallHistorySummary(fields)).toContain("Outcome: Booked");
+  });
+
+  test("prefers the campaign contact over the call's own contact", () => {
+    const call = parseAircallCall({
+      id: 1,
+      status: "done",
+      raw_digits: "+1 555-555-0123",
+      started_at: 1_700_000_000,
+      ended_at: 1_700_000_120,
+      duration: 120,
+      contact: { first_name: "Old", company_name: "Address Book Inc" },
+    });
+    const contact = {
+      phoneNumber: "+15555550123",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      email: null,
+      companyName: "Analytical Engines",
+      note: "Warm lead",
+    };
+    const fields = extractAircallFields(call, contact, null);
+    expect(fields).toMatchObject({
+      firstName: "Ada",
+      lastName: "Lovelace",
+      companyName: "Analytical Engines",
+      note: "Warm lead",
+      //The same number from the call and the contact appears once, not twice.
+      phones: ["+15555550123"],
+    });
+    //No outcome label, no Outcome line.
+    expect(buildCallHistorySummary(fields)).not.toContain("Outcome:");
+  });
+
+  test("parses the outcome_recorded webhook exactly as Aircall delivered it", () => {
+    //Captured from a real delivery on 2026-10-08, token replaced.
+    const webhook = parseAircallOutcomeWebhook({
+      resource: "outbound_campaign",
+      event: "outbound_campaign.outcome_recorded",
+      timestamp: 1791472316,
+      token: "xxx",
+      data: {
+        id: "095acafa-5e40-4fc6-82d1-018ece35f281",
+        company_id: 635553,
+        call_id: 4223079424,
+        number_id: 1339018,
+        campaign_id: "019ffb76-4aaa-762f-85e0-056e3a13729c",
+        attempt_id: "095acafa-5e40-4fc6-82d1-018ece35f281",
+        outcome_id: "019fd21c-5b09-70fc-9356-cfd01be98477",
+        outcome_label: "Connected",
+        attempt_number: 2,
+        max_attempts: 3,
+      },
+    });
+    expect(webhook).toEqual({
+      token: "xxx",
+      event: "outbound_campaign.outcome_recorded",
+      outcome: {
+        callId: 4223079424,
+        campaignId: "019ffb76-4aaa-762f-85e0-056e3a13729c",
+        outcomeId: "019fd21c-5b09-70fc-9356-cfd01be98477",
+        outcomeLabel: "Connected",
+      },
+    });
+    //A payload missing what the workflow needs parses to no outcome rather than throwing.
+    expect(parseAircallOutcomeWebhook({ event: "outbound_campaign.outcome_recorded", token: "xxx", data: {} }).outcome).toBeNull();
+  });
+
+  test("counts Booked, Connected and Referral as interested, and nothing else", () => {
+    expect(isInterestedOutcome("019fd21c-357f-7c2a-b061-3b8b04a0146e")).toBe(true); //Booked
+    expect(isInterestedOutcome("019fd21c-5b09-70fc-9356-cfd01be98477")).toBe(true); //Connected
+    expect(isInterestedOutcome("019fd77c-37b0-7a87-9565-47e77576c25b")).toBe(true); //Referral
+    expect(isInterestedOutcome("019fd21b-f18f-7216-9926-7322e3b36f14")).toBe(false); //No Answer
+    expect(isInterestedOutcome("019fd21d-1933-75d6-b20c-fb27dcd3caaf")).toBe(false); //Not Interested
   });
 
   test("parses the documented Instantly interested event", () => {

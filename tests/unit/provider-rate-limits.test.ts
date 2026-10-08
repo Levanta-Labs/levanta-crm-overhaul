@@ -33,7 +33,6 @@ const envNames = [
   "SUPABASE_SECRET_KEY",
   "AIRCALL_API_ID",
   "AIRCALL_API_TOKEN",
-  "AIRCALL_INTERESTED_TAGS",
   "HEYREACH_API_KEY",
   "HEYREACH_WEBHOOK_SECRET",
   "CRON_SECRET",
@@ -49,7 +48,6 @@ beforeEach(() => {
   process.env.SUPABASE_SECRET_KEY = "sb_secret_test";
   process.env.AIRCALL_API_ID = "aircall-id";
   process.env.AIRCALL_API_TOKEN = "aircall-token";
-  process.env.AIRCALL_INTERESTED_TAGS = "Booked";
   process.env.HEYREACH_API_KEY = "heyreach-key";
   process.env.HEYREACH_WEBHOOK_SECRET = "hook-secret";
   process.env.CRON_SECRET = "cron-secret";
