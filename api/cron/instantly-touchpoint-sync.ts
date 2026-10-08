@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import {
   beforeAnyWrite,
@@ -34,17 +35,21 @@ import { errorMessage } from "../../lib/json.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const SYNC_KEY = "instantly-touchpoints";
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -219,18 +224,20 @@ export async function GET(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//record email touchpoints=====================================================================================
+//=============================================================================================================
+//#region <record email touchpoints>
 
-//#region <record email touchpoints: order emails>
+//#region <order emails>
 /** Keyed on timestamp_created, which is also what the API filters on, so window and cursor agree. */
 export function instantlyCursorEvent(email: InstantlyEmail): CursorEvent {
   return { id: email.id, timestampMs: Date.parse(email.timestampCreated) };
 }
 //#endregion
 
-//#region <record email touchpoints: write to attio>
+//#region <write to attio>
 //---------------------------------------------------------------------------------------------------------
 //Records one email as a touchpoint on the Person and, when linked, the Company.
 //FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
@@ -280,4 +287,5 @@ export async function processInstantlyTouchpoint(email: InstantlyEmail): Promise
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
