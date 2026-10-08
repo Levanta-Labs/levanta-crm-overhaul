@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { waitUntil } from "@vercel/functions";
 import {
@@ -14,9 +15,11 @@ import { interestedLead, recordInterestedLead, type InterestedLead } from "../li
 import { errorMessage, isJsonObject, numberValue, objectValue, stringValue } from "../lib/json.js";
 import { toE164 } from "../lib/phone.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 //The one Aircall event this route acts on. Any other event is acknowledged and ignored.
 const OUTCOME_EVENT = "outbound_campaign.outcome_recorded";
@@ -57,9 +60,11 @@ export interface AircallInterestedFields {
   readonly occurredAt: number; //epoch SECONDS, when the call ended
 }
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Aircall POSTs here for every outcome recorded on any campaign.
@@ -102,11 +107,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//read the webhook=============================================================================================
+//=============================================================================================================
+//#region <read the webhook>
 
-//#region <read the webhook: parse and filter>
+//#region <parse and filter>
 //Reads the webhook body. Throws only when it is not an object; anything missing becomes null.
 export function parseAircallOutcomeWebhook(value: unknown): AircallOutcomeWebhook {
   if (!isJsonObject(value)) throw new Error("Aircall webhook payload must be an object"); //not a webhook at all
@@ -129,11 +136,13 @@ export function isInterestedOutcome(outcomeId: string): boolean {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record the interested lead===================================================================================
+//=============================================================================================================
+//#region <record the interested lead>
 
-//#region <record the interested lead: background job>
+//#region <background job>
 //---------------------------------------------------------------------------------------------------------
 //Records one interested outcome in Attio. Runs AFTER the reply (see waitUntil in POST), so it must never
 //throw - there is no caller left to catch it. Every failure is logged instead.
@@ -175,7 +184,7 @@ async function handleInterestedOutcome(outcome: AircallOutcomeEvent): Promise<vo
 }
 //#endregion
 
-//#region <record the interested lead: gather call details>
+//#region <gather call details>
 //Reads the campaign contact for the dialled number. Never throws: the call alone is enough to record the lead.
 async function readCampaignContact(campaignId: string, phone: string | null): Promise<AircallCampaignContact | null> {
   if (!phone) return null; //no number, nothing to look up
@@ -214,7 +223,7 @@ export function extractAircallFields(
 }
 //#endregion
 
-//#region <record the interested lead: shape for attio>
+//#region <shape for attio>
 //The lead as the shared workflow sees it. Aircall has no LinkedIn, job title, industry, headcount or revenue,
 //so those stay null and are simply not written.
 export function aircallLead(fields: AircallInterestedFields): InterestedLead {
@@ -242,4 +251,5 @@ export function buildCallHistorySummary(fields: AircallInterestedFields): string
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
