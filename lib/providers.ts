@@ -12,15 +12,18 @@
 //
 //A new platform is added to whichever registers apply. Everything downstream is derived.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { blockInstantlyLead } from "./instantly.js";
 import { stopLeadInActiveCampaigns } from "./heyreach.js";
 import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 /** Derived from SOURCES, so appending an entry there is what adds a provider - there is no second list. */
 export type Provider = keyof typeof SOURCES;
@@ -241,11 +244,13 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
   },
 ];
 
+//#endregion
 //=============================================================================================================
 
-//name providers===============================================================================================
+//=============================================================================================================
+//#region <name providers>
 
-//#region <name providers: display names and labels>
+//#region <display names and labels>
 /** [LOGIC] USES: SOURCES (this module). Pure. */
 export function providerDisplayName(provider: Provider): string {
   return SOURCES[provider].displayName;
@@ -264,11 +269,13 @@ export function leadSourceLabel(provider: Provider): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//attribute leads to their source==============================================================================
+//=============================================================================================================
+//#region <attribute leads to their source>
 
-//#region <attribute leads to their source: values to write>
+//#region <values to write>
 //---------------------------------------------------------------------------------------------------------
 //The attribution attributes for one provider on one object, ready to merge into that object's values.
 //Returns the slugs and values together so a caller cannot pair one object's slug with another's ID: the only
@@ -293,7 +300,7 @@ export function attributionSlugs(): readonly string[] {
 }
 //#endregion
 
-//#region <attribute leads to their source: option id lookups>
+//#region <option id lookups>
 //---------------------------------------------------------------------------------------------------------
 //The word an option ID stands for, or null if it is not one this codebase writes.
 //
@@ -328,4 +335,5 @@ export function attributionOptionIds(): readonly AttributionOptionCheck[] {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
