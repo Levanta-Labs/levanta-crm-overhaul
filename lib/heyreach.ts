@@ -1,3 +1,5 @@
+//imports======================================================================================================
+
 import { credentialHint, HEYREACH_BASE, heyreachHeaders } from "./endpoints.js";
 import { rateLimitWaitMs } from "./http.js";
 import {
@@ -9,7 +11,9 @@ import {
   stringValue,
 } from "./json.js";
 
-//Interface==================================================================
+//=============================================================================================================
+
+//types and globals============================================================================================
 
 export interface HeyReachMessage {
   readonly createdAt: string;
@@ -51,8 +55,50 @@ export interface HeyReachConversationQuery {
   readonly profileUrl?: string;
 }
 
-//===========================================================================
+export interface HeyReachConversationWindow {
+  readonly conversations: readonly HeyReachConversation[];
+  /** Set when pagination stopped short of the end of the window; null means it was read to the end. */
+  readonly stoppedBy: "throttled" | null;
+  readonly pagesRead: number;
+}
 
+//---------------------------------------------------------------------------------------------------------
+//What one suppression did, in the two numbers that differ. `inCampaigns` is every campaign HeyReach lists this
+//lead in, live or spent; `removedFrom` is the live subset the lead was actually withdrawn from. Neither counts
+//campaigns halted - a campaign is never stopped here, it carries on running for everyone else in it.
+//Both are reported because they answer different questions: `inCampaigns` at zero means HeyReach has never had
+//this lead, while `inCampaigns` high with `removedFrom` at zero means it had them and they had already run out.
+//---------------------------------------------------------------------------------------------------------
+export interface CampaignStopResult {
+  readonly inCampaigns: number;
+  readonly removedFrom: number;
+}
+
+interface HeyReachCampaign {
+  readonly campaignId: number;
+  readonly campaignStatus: string;
+  readonly leadStatus: string;
+}
+
+export class HeyReachRateLimitError extends Error {
+  constructor(detail: string) {
+    super(`HeyReach rate limit reached: ${detail}`);
+    this.name = "HeyReachRateLimitError";
+  }
+}
+
+const RATE_LIMIT_ATTEMPTS = 3;
+//Matches attioFetch's RETRY_BASE_MS, so the one backoff shape in this codebase stays one shape.
+const RATE_LIMIT_BASE_MS = 500;
+//[PERF] A run that spends its budget asleep has done nothing. Past this, stopping and resuming next run beats
+//waiting, because the next run starts with a fresh allowance either way - see rateLimitWaitMs (lib/http.ts).
+const RATE_LIMIT_MAX_WAIT_MS = 5_000;
+
+//=============================================================================================================
+
+//parse heyreach responses=====================================================================================
+
+//#region <parse heyreach responses: conversations>
 function parseMessage(value: unknown): HeyReachMessage {
   if (!isJsonObject(value)) throw new Error("HeyReach returned an invalid message");
   const createdAt = stringValue(value.createdAt);
@@ -103,8 +149,25 @@ export function parseHeyReachConversation(value: unknown): HeyReachConversation 
     messages: arrayValue(value, "messages").map(parseMessage),
   };
 }
+//#endregion
+
+//#region <parse heyreach responses: campaigns>
+function parseCampaign(value: unknown): HeyReachCampaign {
+  if (!isJsonObject(value)) throw new Error("HeyReach returned an invalid campaign");
+  const campaignId = numberValue(value.campaignId);
+  const campaignStatus = stringValue(value.campaignStatus);
+  const leadStatus = stringValue(value.leadStatus);
+  if (campaignId === null || !campaignStatus || !leadStatus) {
+    throw new Error("HeyReach campaign is missing required fields");
+  }
+  return { campaignId, campaignStatus, leadStatus };
+}
+//#endregion
 
 //=============================================================================================================
+
+//heyreach transport===========================================================================================
+
 //Rate limiting.
 //
 //HeyReach refuses with 429 once the key's allowance is spent, and the allowance is shared across every
@@ -116,22 +179,8 @@ export function parseHeyReachConversation(value: unknown): HeyReachConversation 
 //Instantly gets a page cap because its 20-per-minute ceiling is documented as a hard figure; here the
 //transport can only react to the refusal when it arrives. A refused request was not processed, so repeating it
 //cannot apply anything twice - which is what makes this safe on StopLeadInCampaign as well as on the reads.
-//=============================================================================================================
 
-export class HeyReachRateLimitError extends Error {
-  constructor(detail: string) {
-    super(`HeyReach rate limit reached: ${detail}`);
-    this.name = "HeyReachRateLimitError";
-  }
-}
-
-const RATE_LIMIT_ATTEMPTS = 3;
-//Matches attioFetch's RETRY_BASE_MS, so the one backoff shape in this codebase stays one shape.
-const RATE_LIMIT_BASE_MS = 500;
-//[PERF] A run that spends its budget asleep has done nothing. Past this, stopping and resuming next run beats
-//waiting, because the next run starts with a fresh allowance either way - see rateLimitWaitMs (lib/http.ts).
-const RATE_LIMIT_MAX_WAIT_MS = 5_000;
-
+//#region <heyreach transport: requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every HeyReach call. Nothing else in this module calls fetch.
 //
@@ -174,7 +223,13 @@ async function heyreachFetch(path: string, body: unknown): Promise<unknown> {
     );
   }
 }
+//#endregion
 
+//=============================================================================================================
+
+//read conversations===========================================================================================
+
+//#region <read conversations: conversation windows>
 //---------------------------------------------------------------------------------------------------------
 //Reads conversations with their full message lists, paginated. Two callers: the touchpoint cron passes a time
 //window, the interested webhook passes one profile URL.
@@ -187,13 +242,6 @@ async function heyreachFetch(path: string, body: unknown): Promise<unknown> {
 //past a window boundary. Deduplication is the per-message cursor check in the sync handler, not this filter.
 //USES: heyreachFetch (this module); arrayValue, booleanValue, isJsonObject, stringValue (lib/json.ts).
 //---------------------------------------------------------------------------------------------------------
-export interface HeyReachConversationWindow {
-  readonly conversations: readonly HeyReachConversation[];
-  /** Set when pagination stopped short of the end of the window; null means it was read to the end. */
-  readonly stoppedBy: "throttled" | null;
-  readonly pagesRead: number;
-}
-
 //---------------------------------------------------------------------------------------------------------
 //The paginating form, which keeps what it read when HeyReach refuses the rest.
 //
@@ -270,7 +318,9 @@ export async function fetchHeyReachConversations(
   }
   return conversations;
 }
+//#endregion
 
+//#region <read conversations: message ids>
 /**
  * A stable per-message ID. HeyReach gives messages none, and the cursor needs one to tell events apart at the
  * same timestamp, so the identity is a SHA-256 of the fields that define the message. Deterministic across
@@ -292,36 +342,13 @@ export async function heyReachMessageId(
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+//#endregion
 
-//---------------------------------------------------------------------------------------------------------
-//What one suppression did, in the two numbers that differ. `inCampaigns` is every campaign HeyReach lists this
-//lead in, live or spent; `removedFrom` is the live subset the lead was actually withdrawn from. Neither counts
-//campaigns halted - a campaign is never stopped here, it carries on running for everyone else in it.
-//Both are reported because they answer different questions: `inCampaigns` at zero means HeyReach has never had
-//this lead, while `inCampaigns` high with `removedFrom` at zero means it had them and they had already run out.
-//---------------------------------------------------------------------------------------------------------
-export interface CampaignStopResult {
-  readonly inCampaigns: number;
-  readonly removedFrom: number;
-}
+//=============================================================================================================
 
-interface HeyReachCampaign {
-  readonly campaignId: number;
-  readonly campaignStatus: string;
-  readonly leadStatus: string;
-}
+//stop outreach to a lead======================================================================================
 
-function parseCampaign(value: unknown): HeyReachCampaign {
-  if (!isJsonObject(value)) throw new Error("HeyReach returned an invalid campaign");
-  const campaignId = numberValue(value.campaignId);
-  const campaignStatus = stringValue(value.campaignStatus);
-  const leadStatus = stringValue(value.leadStatus);
-  if (campaignId === null || !campaignStatus || !leadStatus) {
-    throw new Error("HeyReach campaign is missing required fields");
-  }
-  return { campaignId, campaignStatus, leadStatus };
-}
-
+//#region <stop outreach to a lead: active campaigns>
 //---------------------------------------------------------------------------------------------------------
 //Ends outbound sequencing for a lead who has said yes. The only provider-side write in the codebase.
 //Scoped to the one lead: StopLeadInCampaign withdraws them from a campaign, it does not halt the campaign.
@@ -370,3 +397,6 @@ export async function stopLeadInActiveCampaigns(
   }
   return { inCampaigns: listed.length, removedFrom: campaigns.length };
 }
+//#endregion
+
+//=============================================================================================================
