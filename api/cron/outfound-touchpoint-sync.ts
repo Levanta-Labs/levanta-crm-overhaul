@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import {
   beforeAnyWrite,
@@ -36,9 +37,11 @@ import {
 import { budgetSeconds, startRunBudget, type RunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 const SYNC_KEY = "outfound-touchpoints";
 
@@ -63,9 +66,11 @@ export interface OutfoundExpansion {
   readonly stoppedBy: "budget" | "throttled" | null;
 }
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -224,11 +229,13 @@ export async function GET(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//build email stream===========================================================================================
+//=============================================================================================================
+//#region <build email stream>
 
-//#region <build email stream: expand threads>
+//#region <expand threads>
 //---------------------------------------------------------------------------------------------------------
 //Expands threads into one chronological email stream.
 //FLOW: 1. per thread, fetch its messages. 2. keep only real sent/received traffic. 3. pair each with its cursor
@@ -299,7 +306,7 @@ function sortByTime(events: readonly OutfoundTouchpointEvent[]): readonly Outfou
 }
 //#endregion
 
-//#region <build email stream: filter and order emails>
+//#region <filter and order emails>
 /** Keyed on sent_at, which is also what the thread filter bounds on, so window and cursor agree. */
 export function outfoundCursorEvent(email: OutfoundEmail): CursorEvent {
   return { id: email.id, timestampMs: Date.parse(email.sentAt) };
@@ -315,11 +322,13 @@ export function isOutfoundTouchpoint(email: OutfoundEmail): boolean {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record email touchpoints=====================================================================================
+//=============================================================================================================
+//#region <record email touchpoints>
 
-//#region <record email touchpoints: write to attio>
+//#region <write to attio>
 //---------------------------------------------------------------------------------------------------------
 //Records one email as a touchpoint on the Person and, when linked, the Company.
 //FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
@@ -375,4 +384,5 @@ export async function processOutfoundTouchpoint(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
