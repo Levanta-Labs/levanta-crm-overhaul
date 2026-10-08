@@ -3,14 +3,13 @@ import { GET as aircallSync } from "../../api/cron/aircall-touchpoint-sync.js";
 import { GET as heyReachSync } from "../../api/cron/heyreach-touchpoint-sync.js";
 import { GET as instantlySync } from "../../api/cron/instantly-touchpoint-sync.js";
 import { GET as outfoundSync } from "../../api/cron/outfound-touchpoint-sync.js";
-import { historyNoteCalls, installFetchMock, jsonResponse, noteWrites, notesResponse } from "./test-utils.js";
+import { installFetchMock, jsonResponse, noteWrites, notesResponse } from "./test-utils.js";
 
 const envNames = [
   "SUPABASE_URL",
   "SUPABASE_SECRET_KEY",
   "AIRCALL_API_ID",
   "AIRCALL_API_TOKEN",
-  "AIRCALL_INTERESTED_TAGS",
   "ATTIO_DEFAULT_DEAL_OWNER",
   "INSTANTLY_API_KEY",
   "HEYREACH_API_KEY",
@@ -35,7 +34,6 @@ beforeEach(() => {
   process.env.SUPABASE_SECRET_KEY = "sb_secret_test";
   process.env.AIRCALL_API_ID = "aircall-id";
   process.env.AIRCALL_API_TOKEN = "aircall-token";
-  process.env.AIRCALL_INTERESTED_TAGS = "Booked, Connected";
   process.env.ATTIO_DEFAULT_DEAL_OWNER = "owner@example.com";
   process.env.INSTANTLY_API_KEY = "instantly-key";
   process.env.HEYREACH_API_KEY = "heyreach-key";
@@ -155,125 +153,11 @@ describe("cron handlers", () => {
     }
   });
 
-  test("Aircall runs the interested workflow for a polled call already carrying an interested tag", async () => {
-    //The tag is applied after the call, so the poll is what finds it - there is no webhook in this path at all.
-    const mock = installFetchMock((url, init) => {
-      if (url.includes("supabase.co") && init?.method === "POST") return new Response(null, { status: 204 });
-      if (url.includes("supabase.co")) return jsonResponse([]);
-      if (url.includes("objects/people/records/person-1/entries")) return jsonResponse({ data: [] });
-      if (url.includes("objects/people/records/query")) {
-        return jsonResponse({ data: [{ id: { record_id: "person-1" }, values: { associated_deals: [] } }] });
-      }
-      if (url.includes("objects/people/records/person-1")) return jsonResponse({ data: {} });
-      if (url.includes("objects/deals/records")) {
-        return jsonResponse({ data: { id: { record_id: "deal-1" }, values: {} } });
-      }
-      if (url.includes("/lists/dnc/entries")) return jsonResponse({ data: {} });
-      //Suppression now runs across every outbound platform, not just the Attio DNC list.
-      if (url.includes("block-lists-entries")) return jsonResponse({ data: {} });
-      if (url.includes("/notes")) return notesResponse(init);
-      if (url.includes("api.aircall.io")) {
-        return jsonResponse({
-          calls: [
-            {
-              id: 1,
-              status: "done",
-              direction: "outbound",
-              raw_digits: "+1 555-555-0123",
-              started_at: Math.floor(Date.now() / 1000) - 120,
-              ended_at: Math.floor(Date.now() / 1000) - 60,
-              duration: 42,
-              tags: [{ name: "Outbound Campaign" }, { name: "Booked" }],
-              contact: { id: 77, first_name: "Ada", last_name: "Lovelace", emails: [{ value: "ada@example.com" }] },
-            },
-          ],
-          meta: { next_page_link: null },
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    try {
-      const response = await aircallSync(cronRequest());
-      expect(await response.json()).toMatchObject({ success: true, callsFound: 1, interested: 1 });
-
-      //A deal, a note on the person and on the deal, and the DNC listing - the full interested workflow.
-      expect(mock.calls.some((call) => call.input.includes("objects/deals/records"))).toBe(true);
-      expect(historyNoteCalls(mock.calls)).toHaveLength(2);
-      expect(mock.calls.some((call) => call.input.includes("/lists/dnc/entries"))).toBe(true);
-    } finally {
-      mock.restore();
-    }
-  });
-
-  test("Aircall still acts on an interested tag applied to a call the cursor has already passed", async () => {
-    //Two runs landing close together, which is the case INTERESTED_LOOKBACK_MS exists for: the call ended three
-    //minutes ago and the cursor was saved two minutes ago, so the touchpoint side has finished with it. The tag
-    //was applied since. Only the lookback brings it back for the interested check, because min(cursor, now -
-    //lookback) then reaches further back than the cursor alone. Deliberately inside the five-minute lookback -
-    //at the normal ten-minute cadence the cursor is the wider floor and this constant never binds.
-    const endedAt = Math.floor(Date.now() / 1000) - 180;
-    const cursorSavedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    const mock = installFetchMock((url, init) => {
-      if (url.includes("supabase.co") && init?.method === "POST") return new Response(null, { status: 204 });
-      if (url.includes("supabase.co")) {
-        return jsonResponse([{ sync_key: "aircall-touchpoints", cursor_value: null, cursor_timestamp: cursorSavedAt }]);
-      }
-      if (url.includes("objects/people/records/query")) {
-        return jsonResponse({ data: [{ id: { record_id: "person-1" }, values: { associated_deals: [] } }] });
-      }
-      if (url.includes("objects/people/records/person-1")) return jsonResponse({ data: {} });
-      if (url.includes("objects/deals/records")) {
-        return jsonResponse({ data: { id: { record_id: "deal-1" }, values: {} } });
-      }
-      if (url.includes("/lists/dnc/entries")) return jsonResponse({ data: {} });
-      //Suppression now runs across every outbound platform, not just the Attio DNC list.
-      if (url.includes("block-lists-entries")) return jsonResponse({ data: {} });
-      if (url.includes("/notes")) return notesResponse(init);
-      if (url.includes("api.aircall.io")) {
-        //The requested window must reach back past the cursor, or this call would not be returned at all.
-        const from = Number(new URL(url).searchParams.get("from")) * 1000;
-        expect(from).toBeLessThan(Date.parse(cursorSavedAt));
-        return jsonResponse({
-          calls: [
-            {
-              id: 1,
-              status: "done",
-              direction: "outbound",
-              raw_digits: "+1 555-555-0123",
-              started_at: endedAt - 60,
-              ended_at: endedAt,
-              duration: 60,
-              tags: [{ name: "Booked" }],
-              contact: { id: 77, first_name: "Ada", last_name: "Lovelace", emails: [{ value: "ada@example.com" }] },
-            },
-          ],
-          meta: { next_page_link: null },
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    try {
-      const body = await (await aircallSync(cronRequest())).json();
-      //Interested ran; the touchpoint did not, because the cursor is still past this call.
-      expect(body).toMatchObject({
-        callsFound: 1,
-        callsInScope: 1,
-        interested: 1,
-        processed: 0,
-        skipped: 0,
-        not_tam: 0,
-      });
-      expect(mock.calls.some((call) => call.input.includes("objects/deals/records"))).toBe(true);
-    } finally {
-      mock.restore();
-    }
-  });
-
   test("Aircall reaches back past the longest call, because the API filters on creation time", async () => {
     //Regression: /calls filters on when a call was CREATED, but this sync places calls by when they ENDED. A
     //call lasting longer than the completion window used to be filtered out as "not done" on every run that
     //covered its start, then fell out of range before it ever looked finished - lost entirely. The requested
-    //`from` must therefore sit a full call-duration margin below the oldest completion the run acts on.
+    //`from` must therefore sit a full call-duration margin below the cursor.
     let requestedFromMs = 0;
     const startedAt = Math.floor(Date.now() / 1000) - 95 * 60; //began 95 minutes ago
     const endedAt = Math.floor(Date.now() / 1000) - 60; //ended one minute ago
@@ -287,15 +171,9 @@ describe("cron handlers", () => {
         return jsonResponse({ data: [{ id: { record_id: "person-1" }, values: { associated_deals: [] } }] });
       }
       if (url.includes("objects/people/records/person-1")) {
-        //Serves both the interested patch and the counter's read-then-write.
+        //Serves the counter's read-then-write.
         return init?.method === "PATCH" ? jsonResponse({}) : jsonResponse({ data: { id: { record_id: "record-1" }, values: { number_of_calls: [] } } });
       }
-      if (url.includes("objects/deals/records")) {
-        return jsonResponse({ data: { id: { record_id: "deal-1" }, values: {} } });
-      }
-      if (url.includes("/lists/dnc/entries")) return jsonResponse({ data: {} });
-      //Suppression now runs across every outbound platform, not just the Attio DNC list.
-      if (url.includes("block-lists-entries")) return jsonResponse({ data: {} });
       if (url.includes("/notes")) return notesResponse(init);
       if (url.includes("api.aircall.io")) {
         requestedFromMs = Number(new URL(url).searchParams.get("from")) * 1000;
@@ -310,7 +188,6 @@ describe("cron handlers", () => {
               started_at: startedAt,
               ended_at: endedAt,
               duration: endedAt - startedAt,
-              tags: [{ name: "Booked" }],
               contact: { id: 77, first_name: "Ada", last_name: "Lovelace", emails: [{ value: "ada@example.com" }] },
             },
           ],
@@ -321,17 +198,17 @@ describe("cron handlers", () => {
     });
     try {
       const body = await (await aircallSync(cronRequest())).json();
-      //A 95-minute call that ended a minute ago is both counted and checked for its tag.
-      expect(body).toMatchObject({ callsFound: 1, processed: 1, interested: 1 });
+      //A 95-minute call that ended a minute ago is still counted.
+      expect(body).toMatchObject({ callsFound: 1, processed: 1 });
       expect(requestedFromMs).toBeLessThan(startedAt * 1000);
     } finally {
       mock.restore();
     }
   });
 
-  test("Aircall ignores a call that ended before the window it acts on, despite the wider fetch", async () => {
-    //The margin above drags in old calls purely for reach. Neither gate may act on them: the cursor blocks the
-    //touchpoint, and an explicit completion floor blocks the interested check that is not cursor-gated.
+  test("Aircall ignores a call that ended before the cursor, despite the wider fetch", async () => {
+    //The margin above drags in old calls purely for reach. The cursor must reject them, or every run would
+    //re-count the last two hours of calls.
     const endedAt = Math.floor(Date.now() / 1000) - 3 * 60 * 60; //finished three hours ago
     const mock = installFetchMock((url, init) => {
       if (url.includes("supabase.co") && init?.method === "POST") return new Response(null, { status: 204 });
@@ -347,7 +224,6 @@ describe("cron handlers", () => {
               started_at: endedAt - 60,
               ended_at: endedAt,
               duration: 60,
-              tags: [{ name: "Booked" }],
               contact: { id: 77, first_name: "Ada", last_name: "Lovelace", emails: [{ value: "ada@example.com" }] },
             },
           ],
@@ -358,8 +234,8 @@ describe("cron handlers", () => {
     });
     try {
       const body = await (await aircallSync(cronRequest())).json();
-      //Fetched for reach, but outside scope, so neither gate acts and the summary says so.
-      expect(body).toMatchObject({ callsFound: 1, callsInScope: 0, processed: 0, interested: 0, failed: 0 });
+      //Fetched for reach, but behind the cursor, so nothing acts and the summary says so.
+      expect(body).toMatchObject({ callsFound: 1, beforeCursor: 1, processed: 0, failed: 0 });
       //No Attio call of any kind: an old call must not be re-recorded just because the fetch reached it.
       expect(mock.calls.some((call) => call.input.includes("api.attio.com"))).toBe(false);
     } finally {
@@ -392,38 +268,6 @@ describe("cron handlers", () => {
     }
   });
 
-  test("Aircall leaves a polled call alone when none of its tags are interested", async () => {
-    const mock = installFetchMock((url, init) => {
-      if (url.includes("supabase.co") && init?.method === "POST") return new Response(null, { status: 204 });
-      if (url.includes("supabase.co")) return jsonResponse([]);
-      if (url.includes("objects/people/records/query")) return jsonResponse({ data: [] });
-      if (url.includes("api.aircall.io")) {
-        return jsonResponse({
-          calls: [
-            {
-              id: 1,
-              status: "done",
-              direction: "outbound",
-              raw_digits: "+1 555-555-0123",
-              started_at: Math.floor(Date.now() / 1000) - 120,
-              ended_at: Math.floor(Date.now() / 1000) - 60,
-              duration: 42,
-              tags: [{ name: "Outbound Campaign" }],
-            },
-          ],
-          meta: { next_page_link: null },
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    try {
-      expect(await (await aircallSync(cronRequest())).json()).toMatchObject({ callsFound: 1, interested: 0 });
-      expect(mock.calls.some((call) => call.input.includes("objects/deals/records"))).toBe(false);
-    } finally {
-      mock.restore();
-    }
-  });
-
   test("Aircall stops on the run budget and leaves the cursor where the loop reached, not at now", async () => {
     //A 2ms budget against an Aircall read deliberately made to take 20ms: the budget is spent before the loop
     //starts, so it breaks on its very first call. Nothing is processed, and - the part that matters - the cursor
@@ -450,7 +294,6 @@ describe("cron handlers", () => {
             started_at: endedAt - 60,
             ended_at: endedAt + id,
             duration: 60,
-            tags: [{ name: "Booked" }],
           })),
           meta: { next_page_link: null },
         });
@@ -467,7 +310,6 @@ describe("cron handlers", () => {
         callsFound: 3,
         callsRemaining: 3,
         processed: 0,
-        interested: 0,
       });
       //No Attio work was attempted, so there is nothing to double-count next run.
       expect(mock.calls.some((call) => call.input.includes("attio"))).toBe(false);
@@ -1025,29 +867,6 @@ describe("cron handlers", () => {
       expect(summary[0]).toContain("no cursor was ever read");
     });
   }
-
-  test("Aircall reports a run that threw on its config, before it ever reached the cursor", async () => {
-    //interestedTagSet runs ahead of every network call, so this is the earliest a run can die - and the one
-    //place the summary has neither a cursor nor a window to print. It still prints.
-    delete process.env.AIRCALL_INTERESTED_TAGS;
-    const log = captureRunLog();
-    const mock = installFetchMock((url) => {
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    try {
-      expect((await aircallSync(cronRequest())).status).toBe(500);
-    } finally {
-      log.restore();
-      mock.restore();
-    }
-    const summary = log.lines.filter((line) => line.startsWith("[run] aircall sync:"));
-    expect(summary).toHaveLength(1);
-    expect(summary[0]).toContain("ABANDONED on an error");
-    expect(summary[0]).toContain("no window derived");
-    expect(summary[0]).toContain("no cursor was ever read");
-    //And it cost nothing: the config read is ahead of the multi-hour Aircall pull, which never happened.
-    expect(mock.calls).toHaveLength(0);
-  });
 
   test("Instantly reports a run that wrote to Attio and then failed to save its cursor", async () => {
     //The dangerous shape, and the reason the line names the cursor's fate rather than just printing a

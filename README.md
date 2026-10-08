@@ -120,7 +120,7 @@ moved to interested at: 2026-06-14      moved to interested at: 2026-06-14T09:31
 
 Nothing had to be instrumented to produce the log. `lib/run-log.ts` mirrors `console` for the duration of one
 run, so the existing log lines are the single source and cannot drift from the transcript. Capture is scoped
-per lead, which is what keeps the several interested calls in one Aircall invocation apart, and what keeps the
+per lead, which is what keeps concurrent interested runs apart, and what keeps the
 touchpoint crons - which share `lib/attio.ts` but never open a scope - out of it entirely.
 
 **The after state is derived, not re-read.** `patchRecord` has three call sites, all inside
@@ -260,9 +260,8 @@ Outfound is keyed on a thread rather than an address, because it has no "block t
 the lead up first, and an address Outfound holds no thread for reports itself as skipped. It marks the address,
 never the domain: a domain-wide block would suppress every colleague of the person who just showed interest.
 
-Aircall is absent because it is a phone system with no campaign or blocklist API - there is nothing there to
-call. Aircall dialling is governed by the Attio DNC list, which is why that is the first channel and the one
-that matters most.
+Aircall is absent by design: it needs no suppression of its own. Aircall dialling is governed by the Attio DNC
+list, which is why that is the first channel and the one that matters most.
 
 Each channel is independent and a failure in one does not stop the others: half the platforms suppressed is
 strictly better than one suppressed and the rest untouched because the first threw. Failures are returned in the
@@ -315,9 +314,12 @@ Only fields that exist on both sides are mapped. The providers are not equally r
 | Deal `website`, `industry`, `employees`, `revenue` | - | yes | - | yes |
 
 Aircall is the thinnest by a wide margin: no LinkedIn URL, job title, industry, headcount, or revenue exists
-anywhere in its API, and a name or company appears only when the dialled number was already in Aircall's address
-book - which for a cold campaign it usually is not. A cold dial therefore creates no Company at all, because a
-company record named after a phone number is worse than no company.
+anywhere in its API. The name, company, email and note come from the **campaign contact** - the row the campaign
+was loaded with - read by the dialled number (`GET /campaigns/{id}/contacts?phone_number=`). The call's own
+`contact` is only set when the number is in Aircall's address book, which for a cold campaign it usually is not,
+so it is the fallback rather than the source. Campaign contacts in this workspace usually carry a name and a
+company but no email, so the lead is normally matched in Attio by phone. A contact with no company creates no
+Company at all, because a company record named after a phone number is worse than no company.
 
 Instantly is the richest, but almost none of it is on the webhook. `/api/instantly-interested` reads the lead
 record back (`POST /leads/list`) for the job title, LinkedIn URL, phone, industry, headcount, revenue, location,
@@ -341,47 +343,51 @@ alpha-2 code - which reads correctly as a Person location but is not a postal ad
 | --- | --- | --- |
 | `/api/instantly-interested` | Instantly | A `lead_interested` webhook using current top-level v2 fields; the route reads the lead record back for enrichment |
 | `/api/outfound-interested` | Outfound | A Webhook Relay prospect payload carrying `lead_email`. **No event type is filtered on** - which lead categories fire the relay is configured on Outfound's side, so everything authenticated is recorded |
+| `/api/aircall-interested` | Aircall | An `outbound_campaign.outcome_recorded` webhook, authenticated by the `token` field in its body. Fires for **every** outcome on **every** campaign; the route acts only on Booked, Connected and Referral, by outcome ID, and acknowledges the rest with a `200` |
 | `/api/heyreach-interested` | HeyReach | A HeyReach webhook carrying a lead object, nested or top-level, containing `profileUrl`/`linkedInUrl` or `email`. **No event type is filtered on** - which events fire is configured per webhook in HeyReach and is edited there without a deploy, so the route records everything authenticated and *names* the event in the log instead |
-| `/api/cron/aircall-touchpoint-sync` | Vercel Cron | Authorized GET every ten minutes (`*/10 * * * *`); also runs the interested workflow for any call whose completion falls in the window and already carries an `AIRCALL_INTERESTED_TAGS` tag |
+| `/api/cron/aircall-touchpoint-sync` | Vercel Cron | Authorized GET every ten minutes (`*/10 * * * *`). Touchpoints only - interested leads arrive at `/api/aircall-interested` |
 | `/api/cron/instantly-touchpoint-sync` | Vercel Cron | Authorized GET every five minutes |
 | `/api/cron/outfound-touchpoint-sync` | Vercel Cron | Authorized GET every five minutes |
 | `/api/cron/heyreach-touchpoint-sync` | Vercel Cron | Authorized GET every five minutes |
 
-### Aircall interested leads are found by polling, not by webhook
+### Aircall interested leads arrive by webhook, as outcomes
 
-There is no `/api/aircall-interested` route. It was removed. Aircall applies an outcome tag *after* the call ends,
-so the payload the webhook received almost never carried the tag yet, and the touchpoint cron had to cover the gap
-regardless; running both meant every tagged call was recorded twice. The workflow now lives in
-`lib/aircall-interested.ts` and has exactly one caller, the cron.
+"Interested" in Aircall is a campaign **outcome** - the disposition an agent picks after the call - not a tag on
+the call. An earlier version polled call tags for it, behind a lookback window to cover the lag between a call
+ending and the tag being applied, and never matched: the only tag campaign calls carry is `Outbound Campaign`,
+and outcomes never appear among the tags.
 
-Each run reads every call's tags straight from the API and runs `processAircallInterested` for any call already
-tagged. Because a tag is applied after the call, a high-water cursor alone would carry a call past the check before
-its tag exists, so the interested check is not cursor-gated. Its floor is `min(cursor, now - INTERESTED_LOOKBACK_MS)`,
-with the lookback set to five minutes.
+Aircall sends `outbound_campaign.outcome_recorded` when an outcome is recorded, so Aircall now works like the other
+three providers: one webhook route, `api/aircall-interested.ts`, calling `recordInterestedLead`.
 
-**This sync runs every ten minutes, and at that cadence the lookback does not bind - five minutes is a minimum, not
-the window.** The cursor sits about 12 minutes back (the gap plus the two-minute `CURSOR_GRACE_MS`), and 12 minutes
-back reaches further back than five does, so `min()` picks the cursor. Real tag tolerance day to day is therefore
-**~12 minutes**, not five. What the constant guarantees is the floor when two runs land close together - a manual
-trigger behind a scheduled one, or a retry - where the cursor is only a minute or two back and would otherwise leave
-almost no tolerance at all. Lowering it further cannot push tolerance below the cursor's ~12 minutes; only a shorter
-cadence can do that.
+**It fires for every outcome, on every campaign.** Aircall offers no filter, so No Answer and Voicemail arrive as
+well as Booked - about 90 deliveries a day at October 2026 volume. The route filters them itself, before any
+network call, against `INTERESTED_OUTCOME_IDS`: Booked, Connected and Referral. They are matched by **ID**, not by
+name, so renaming an outcome in Aircall cannot break the match - the same reasoning as the attribution option IDs.
+Adding an outcome means adding its ID to that set; the IDs are listed by `GET /v1/campaign_outcomes`.
 
-What the ~12-minute floor gives you, measured against this workspace's tag history (63 of 67 hand-applied tags landed
-within five minutes of the call ending, three within thirty, one took 165 minutes):
+**The payload carries IDs and nothing about the person**, so the background job makes two reads:
+`GET /calls/{call_id}` for the dialled number, then `GET /campaigns/{campaign_id}/contacts?phone_number=` for the
+name, email, company and note. The contact read is best-effort: if it fails, the lead is recorded from the call's
+number alone.
 
-- **Tag coverage: the 63.** The three at up to thirty minutes and the 165-minute outlier are missed.
-- **One note per interested call.** A call is re-checked on every run whose floor still covers it, so at a floor
-  barely wider than the cadence it is normally checked once, occasionally twice when it lands inside the two-minute
-  grace band.
-- **Latency up to ten minutes** before a booking's deal, notes, and DNC entry reach Attio.
-- **Heavier runs.** One invocation processes up to ten minutes of new calls plus whatever backlog remains, each
-  touchpoint being up to eight sequential Attio requests. See [The run budget](#the-run-budget).
+**The route replies first and does the work afterwards.** Aircall waits five seconds for a `2xx`, counts anything
+else as a failure, retries a failed event up to 50 times, and then disables the webhook. An interested run makes
+far more sequential requests than fit in five seconds, so the route makes only local checks - the token, the event
+type, the outcome - replies `200`, and runs the workflow under `waitUntil` (`@vercel/functions`), which keeps the
+function alive after the response until the job finishes. What that costs:
 
-This is a deliberate choice of clean notes over maximum tag coverage. The alternative is a 65-minute lookback, which
-recovers the 30-minute tags and the 165-minute outlier but writes each interested call's person and deal notes about
-six times over - the count is always `lookback / cadence`, and the deal itself is never duplicated, only the notes.
-To get wide coverage without the duplicates, lengthen the cadence rather than the lookback.
+- **A failure after the reply is not resent**, because Aircall has already been told it succeeded. It is logged as
+  `FAILED after Aircall was told OK`, naming the call; the outcome can be found again in
+  `GET /v1/campaigns/{id}/call_outcomes` and replayed.
+- **The response body carries no record ids**, only `accepted: true` and the call id, because the work has not
+  happened yet when it is sent. The ids are in the log.
+- **Everything ignored is a `200`, never a `4xx`** - another event type, an outcome that is not interested, or an
+  outcome event missing its fields. A resend of any of those would be identical, and would count towards
+  disabling the webhook.
+
+Aircall delivers at least once and an agent can change an outcome after setting it, so the same lead can arrive
+twice; the repeat check in `recordInterestedLead` declines the second, as it does for HeyReach.
 
 ### The run budget
 
@@ -575,49 +581,39 @@ Two things stay on the old pass-over path, both deliberately:
   Company note still loses the note and the Company counter, and says so in the log. Recovering those needs a
   dead-letter record for manual replay, which does not exist today.
 
-If the lookback is ever retuned, two figures move together: tag tolerance, and how many times an interested call's
-notes are written, which is the lookback divided by the cadence. Having both wide coverage and no duplicates needs a
-record of which calls were already recorded, which does not exist today. Touchpoint counters, by contrast, are
-cursor-gated at any cadence and never double-counted - once the cursor is actually being saved.
-
 ### Why the Aircall window reaches back two hours
 
 Aircall's `/calls` endpoint filters on a call's **creation** time. This sync places calls on its timeline by
-**completion** time, because that is when a call becomes a countable touchpoint and when its tag can exist. The two
+**completion** time, because that is when a call becomes a countable touchpoint. The two
 do not coincide, and the gap between them is the call's duration.
 
 A call is therefore visible to the query from the moment it starts, but `fetchAircallCalls` discards it until it is
 `done`. With a window only as wide as the completion window, a call lasting longer than that window was filtered out
 as unfinished on every run covering its start, then fell out of range before it ever looked finished - lost
-entirely, touchpoint and tag alike. Longer cron intervals do not fix this; they only move the boundary.
+entirely. Longer cron intervals do not fix this; they only move the boundary.
 
-So the request reaches back `MAX_CALL_DURATION_MS` (two hours) below the oldest completion the run acts on. That
-reach is also why the interested check needs an explicit floor of its own rather than simply acting on everything
-the fetch returned: without one it would re-record up to two hours of already-handled calls on every run. The
-extra calls the margin pulls in are rejected by two independent gates - `isAfterCursor` for touchpoints, and the
-completion floor for the interested check, which is deliberately not cursor-gated.
+So the request reaches back `MAX_CALL_DURATION_MS` (two hours) below the cursor. The extra calls the margin pulls
+in were counted on earlier runs, and `isAfterCursor` rejects them.
 
 **This sets a hard ceiling on call length.** A call is caught while its duration stays under roughly this value -
-about 2h02m at the current setting, since the floor trails the completion by up to `CURSOR_GRACE_MS`. Anything
-longer is dropped in full, touchpoint and tag alike, and dropped *silently*: it never reaches the fetch, so no
+about 2h02m at the current setting, since the cursor trails the completion by up to `CURSOR_GRACE_MS`. Anything
+longer is dropped in full, and dropped *silently*: it never reaches the fetch, so no
 counter, log line, or failure entry records that it existed. Widening the constant costs pagination and nothing
 else. Narrowing it below the longest call the account actually makes reintroduces exactly the loss it was added
 to fix.
 
 Aircall reports a number as `raw_digits`, punctuated for display (`+1 949-735-4000`), while Attio stores and matches
 E.164 (`+19497354000`), so every lookup keyed on the raw value missed. `toE164` normalises it, and both Aircall paths
-apply it: the interested workflow inside `extractAircallFields`, so the number written back to Attio is normalised
+apply it: the interested route inside `extractAircallFields`, so the number written back to Attio is normalised
 too, and the touchpoint sync before its own person lookup.
 
-The interested step is given its own error handling inside the run, so a failure there cannot stop the touchpoint
-counters from being written, or the reverse. It needs `ATTIO_DEFAULT_DEAL_OWNER` and `AIRCALL_INTERESTED_TAGS`; the
-latter is read before any network call, so a missing or empty list fails the run without first paying for the fetch.
-
-Both interested webhooks are configured directly in the provider, pointed at the production host
+Every interested webhook is configured directly in the provider, pointed at the production host
 `https://levanta-crm-overhaul.vercel.app`. Instantly, HeyReach and Outfound authenticate with an `x-webhook-secret`
-custom header whose value must match the corresponding environment variable. Point providers at the production hostname,
-never at a deployment-specific URL, which is pinned to a single deployment. Any Aircall webhook still pointed at
-this project should be removed in Aircall: the route no longer exists and every delivery will 404.
+custom header whose value must match the corresponding environment variable. Aircall cannot send a custom header;
+it puts a per-webhook `token` in the JSON body instead, which must match `AIRCALL_WEBHOOK_TOKEN`. Each Aircall
+webhook has its own token, so replacing the webhook means updating the variable. Subscribe it to
+`outbound_campaign.outcome_recorded` only. Point providers at the production hostname, never at a
+deployment-specific URL, which is pinned to a single deployment.
 
 Outfound is a private API with no public documentation; the integration is written against the OpenAPI spec the
 deployment serves itself, at `https://api.outfound.io/openapi-client.json` (rendered at `/scalar/client?org=sas`).
@@ -674,8 +670,8 @@ Keep credentials in `.env.local` for local development and configure the same va
 | `ATTIO_COMPANY_HEYREACH_COUNTER_SLUG` | Company counter slug for HeyReach DMs |
 | `ATTIO_PERSON_OUTFOUND_COUNTER_SLUG` | Person counter slug for Outfound emails. Set to the same slug as the Instantly one: both count email touchpoints, on different mail |
 | `ATTIO_COMPANY_OUTFOUND_COUNTER_SLUG` | Company counter slug for Outfound emails, likewise |
-| `AIRCALL_API_ID` / `AIRCALL_API_TOKEN` | Aircall Basic Auth credentials for polling |
-| `AIRCALL_INTERESTED_TAGS` | Comma-separated Aircall tags that mean interested |
+| `AIRCALL_API_ID` / `AIRCALL_API_TOKEN` | Aircall Basic Auth credentials, for the touchpoint sync and the interested route's call and contact reads |
+| `AIRCALL_WEBHOOK_TOKEN` | The `token` Aircall puts in the body of every delivery from the `outcome_recorded` webhook. Unique per webhook |
 | `AIRCALL_SYNC_BUDGET_MS` / `INSTANTLY_SYNC_BUDGET_MS` / `HEYREACH_SYNC_BUDGET_MS` / `OUTFOUND_SYNC_BUDGET_MS` | Optional, one per sync. Milliseconds that sync's loop may run before it stops and saves its place; each defaults to 240000. See [The run budget](#the-run-budget) |
 | `INTERESTED_DUPLICATE_WINDOW_MS` | Optional. Milliseconds within which a second interested event for the same Person, from the same provider, is declined instead of recorded; defaults to 900000 (fifteen minutes), and `0` turns the check off. See [Repeated events are declined, not re-recorded](#repeated-events-are-declined-not-re-recorded) |
 | `INSTANTLY_API_KEY` | Instantly v2 API key; needs to read emails and leads, and to write blocklist entries |
@@ -759,19 +755,19 @@ Secret values are never logged.
 | Prefix | Meaning |
 | --- | --- |
 | `[env]` | Whether a variable is set, its length in characters, and whether stored surrounding whitespace had to be trimmed |
-| `[config]` | The full value of a non-secret identifier: attribute slugs, `SUPABASE_URL`, the parsed `AIRCALL_INTERESTED_TAGS` list, and which Supabase key variable was used. `ATTIO_DEFAULT_DEAL_OWNER` is reported by domain only |
+| `[config]` | The full value of a non-secret identifier: attribute slugs, `SUPABASE_URL`, and which Supabase key variable was used. `ATTIO_DEFAULT_DEAL_OWNER` is reported by domain only |
 | `[auth]` | Why a cron or webhook request was accepted or rejected, distinguishing an unconfigured secret from an absent header, a missing `Bearer` prefix, and a value that differs by case, whitespace, or length |
 | `[credential]` | A provider answered `401`/`403`, naming the variables that hold that provider's key |
 | `[slug]` | Attio rejected a counter attribute, naming the slug so the matching `ATTIO_PERSON_*` or `ATTIO_COMPANY_*_COUNTER_SLUG` can be checked |
-| `[route]` | The decision a webhook made before touching Attio: that an Instantly event was not `lead_interested`, or which HeyReach lead is being handled - the HeyReach line also names the event HeyReach called the delivery and the campaign it came from, which is what tells one cause of a repeated delivery from another, and falls back to a keys-and-types shape dump when the payload names no event at all. Ends with a line counting the history entries summarised and the platforms that failed to suppress, or saying the event was declined as a repeat |
+| `[route]` | The decision a webhook made before touching Attio: that an Instantly event was not `lead_interested`, or which Aircall outcome was ignored or handed to the background job, which HeyReach lead is being handled - the HeyReach line also names the event HeyReach called the delivery and the campaign it came from, which is what tells one cause of a repeated delivery from another, and falls back to a keys-and-types shape dump when the payload names no event at all. Ends with a line counting the history entries summarised and the platforms that failed to suppress, or saying the event was declined as a repeat. Aircall's background job ends with a `completed` line, or with `FAILED after Aircall was told OK` naming the call |
 | `[dedupe]` | The repeat check: that this Person already carried this run's note from inside the window and the event was declined, or that the note listing could not be read or could not be read to the end - in which case the event is recorded anyway, because dropping a real interested lead costs more than a duplicate note |
-| `[interested]` | The Aircall interested workflow, naming the call and who it was with. Always `poll`: the cron is the only caller. Every call the check sees produces a decision line listing every tag it carried, whether or not any matched, and on a miss the configured set it was compared against; a run reporting nothing interested is therefore readable as "these calls, these tags, no match" rather than as silence. A match is followed by the person and deal it finished with, or by the reason it could not: no way to reach a person (the call carried neither an email nor a phone number), or a failure passed over |
+| `[interested]` | The shared interested workflow's own verdict, for every provider: completed with the person, deal and company it finished with, or declined as a repeat of an event already recorded |
 | `[lookup]` | Each person, company, and deal search and its result, naming the attribute searched and the record matched, plus whether that person is on the Master TAM list. A company line also says when the person was already linked to one, or when neither Attio nor the provider names one and the deal will be named for an unknown company. An Instantly lead lookup names which enrichment fields arrived, by field name only. The deal line reports both outcomes - how many deals the person already had and which is being reused, or that they had none and one is being created - because "checked and found none" and "never checked" must not read alike |
 | `[action]` | Each write and its outcome: person or company created, a record updated with the attribute list, a record left untouched because every target attribute was already populated, deal created, deal reused, note added, blocklist entry added, counter moved from one value to the next. A failure is reported as `[action] FAILED` naming the action and record before the error propagates |
 | `[suppress]` | One line per outbound platform - suppressed, skipped with the identifier it lacked, or `FAILED` with the reason - then a summary naming every platform and its outcome. A failure here is reported, not raised: the Attio record was already written. The HeyReach line carries two figures, how many campaigns the lead is in and how many of those still live ones they were withdrawn from, because no campaign is ever halted and a single count read as though one had been |
 | `[attio]` | An attribute was not written and the event continued anyway: a multiselect left alone because its existing entries could not all be read back, so a replacing write would have risked deleting real data; or a value Attio rejected, named individually, with a count of what was written and what was dropped |
-| `[event]` | Why one polled touchpoint was skipped: no phone or lead email on the record, no Attio person matched, or the person is not on the Master TAM list. An Aircall line names the touchpoint process, to separate it from the interested check running over the same call |
-| `[run]` | One summary per sync: how many records were in the window, how many were processed, skipped, off-TAM, or failed and passed over, and the new cursor. Aircall reports two counts, because its fetch is deliberately wider than its scope: `fetched` is everything the two-hour reach-back returned, `scope` is the subset completing at or after the floor the run acts on. Only the second is expected to match the processed and interested figures; the response body carries the same pair as `callsFound` and `callsInScope`. Every sync also states how many records in its window came from before the cursor and were passed over as already counted, so the line accounts for the whole window rather than leaving the shortfall to be inferred; the response bodies carry it as `beforeCursor`. On HeyReach that figure is normally most of the window, because its fetch is day-granular - see the `[PERF]` note in the sync |
+| `[event]` | Why one polled touchpoint was skipped: no phone or lead email on the record, no Attio person matched, or the person is not on the Master TAM list. |
+| `[run]` | One summary per sync: how many records were in the window, how many were processed, skipped, off-TAM, or failed and passed over, and the new cursor. Aircall's `fetched` count includes the two-hour reach-back, so most of it is normally before the cursor. Every sync also states how many records in its window came from before the cursor and were passed over as already counted, so the line accounts for the whole window rather than leaving the shortfall to be inferred; the response bodies carry it as `beforeCursor`. On HeyReach that figure is normally most of the window, because its fetch is day-granular - see the `[PERF]` note in the sync |
 
 A `401` from a cron route means the guard rejected the request, not that the function failed. The `[auth]` line
 states which case applied. Note that Vercel only attaches the `authorization` header once `CRON_SECRET` exists in

@@ -1,3 +1,6 @@
+//====================================================================================
+//#region <import statements>
+
 import {
   addPersonToList,
   AttioApiError,
@@ -33,7 +36,9 @@ import {
 } from "./providers.js";
 //debug note in attio=
 import { runLogApplied, runLogRecord, withRunLog } from "./run-log.js"; //the tool that writes down what this run did
-//===============
+
+//#endregion
+//====================================================================================
 
 //=============================================================================================================
 //What the three interested workflows have in common.
@@ -46,7 +51,7 @@ import { runLogApplied, runLogRecord, withRunLog } from "./run-log.js"; //the to
 //rendering their own message history into a note.
 //=============================================================================================================
 
-//#region the normalised lead
+//#region <get raw data from the normalised lead>
 //---------------------------------------------------------------------------------------------------------
 //Every field any provider can supply about an interested lead. A provider that cannot supply one passes null,
 //and null never reaches Attio - see updateAttioAttributes.
@@ -115,7 +120,7 @@ export function interestedLead(
 }
 //#endregion
 
-//#region transforms
+//#region <format attributes to attio structure>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] Provider values into the exact shape one Attio attribute type accepts.
 //Every one returns null rather than a best guess when the input does not fit. A blank attribute is
@@ -947,7 +952,7 @@ export interface InterestedWorkflow {
    * fetching a thread costs a request, and it should not be paid until the lead is known to be recordable.
    */
   readonly history: () => Promise<string>;
-  /** What this event is called in the logs - "poll call 4821", "heyreach-interested". */
+  /** What this event is called in the logs - "aircall call 4821", "heyreach-interested". */
   readonly subject: string;
 }
 

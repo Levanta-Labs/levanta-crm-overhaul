@@ -151,3 +151,24 @@ export function hasWebhookSecret(request: Request, envName: string): boolean {
   }
   return verifySecret(envName, envName, "the x-webhook-secret header", header, secret);
 }
+
+/**
+ * [SECURITY] Gate on webhooks that carry their secret inside the JSON body rather than a header - Aircall puts
+ * it in a `token` field. Same rejection branches as hasWebhookSecret, for the same diagnostic reason.
+ */
+export function hasBodyToken(presented: string | null, envName: string): boolean {
+  const secret = optionalEnv(envName); //the configured token, or null
+  if (secret === null) {
+    console.warn(
+      `[auth] ${envName}: rejected - ${envName} is not configured on this deployment, so no webhook can be verified.`,
+    ); //nothing to compare against
+    return false;
+  }
+  if (presented === null) {
+    console.warn(
+      `[auth] ${envName}: rejected - the body carried no token field, though ${envName} is configured (${secret.length} chars).`,
+    ); //request had no token
+    return false;
+  }
+  return verifySecret(envName, envName, "the body's token field", presented, secret); //compare, log the result
+}
