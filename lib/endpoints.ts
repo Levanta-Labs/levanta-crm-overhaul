@@ -1,6 +1,13 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { optionalEnv, reportConfigValue, requiredEnv } from "./env.js";
 
-//Base URLs====================================================================================
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
 
 export const ATTIO_BASE = "https://api.attio.com/v2";
 export const AIRCALL_BASE = "https://api.aircall.io/v1";
@@ -10,16 +17,38 @@ export const HEYREACH_BASE = "https://api.heyreach.io/api/public";
 //itself, at https://api.outfound.io/openapi-client.json (rendered at /scalar/client?org=sas).
 export const OUTFOUND_BASE = "https://api.outfound.io";
 
+const CREDENTIAL_ENV_NAMES = {
+  attio: ["ATTIO_API_KEY"],
+  aircall: ["AIRCALL_API_ID", "AIRCALL_API_TOKEN"],
+  instantly: ["INSTANTLY_API_KEY"],
+  heyreach: ["HEYREACH_API_KEY"],
+  outfound: ["OUTFOUND_API_KEY"],
+  supabase: ["SUPABASE_URL", "SUPABASE_SECRET_KEY (or the legacy SUPABASE_SERVICE_ROLE_KEY)"],
+} as const;
+
+export type CredentialScope = keyof typeof CREDENTIAL_ENV_NAMES;
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <find service urls>
+
+//#region <supabase>
 export function supabaseBaseUrl(): string {
   const url = requiredEnv("SUPABASE_URL");
   reportConfigValue("SUPABASE_URL", url);
   return url;
 }
+//#endregion
 
-//==============================================================================================
+//#endregion
+//=============================================================================================================
 
-//Headers (API keys are read from env vars at call time, never hardcoded)=====================
+//=============================================================================================================
+//#region <build request headers>
 
+//#region <keys read from env at call time, never hardcoded>
 export function attioHeaders(): HeadersInit {
   return {
     Authorization: `Bearer ${requiredEnv("ATTIO_API_KEY")}`,
@@ -62,24 +91,18 @@ export function supabaseHeaders(): HeadersInit {
   if (key.startsWith("eyJ")) headers.Authorization = `Bearer ${key}`;
   return headers;
 }
+//#endregion
 
-//==============================================================================================
+//#endregion
+//=============================================================================================================
 
-//Credential diagnostics========================================================================
+//=============================================================================================================
+//#region <explain rejected credentials>
+
 //A provider can only tell us a key is wrong by rejecting the request, so translate its 401/403 into the name of
 //the environment variable that has to change. Anything else is a data or permission problem, not a credential.
 
-const CREDENTIAL_ENV_NAMES = {
-  attio: ["ATTIO_API_KEY"],
-  aircall: ["AIRCALL_API_ID", "AIRCALL_API_TOKEN"],
-  instantly: ["INSTANTLY_API_KEY"],
-  heyreach: ["HEYREACH_API_KEY"],
-  outfound: ["OUTFOUND_API_KEY"],
-  supabase: ["SUPABASE_URL", "SUPABASE_SECRET_KEY (or the legacy SUPABASE_SERVICE_ROLE_KEY)"],
-} as const;
-
-export type CredentialScope = keyof typeof CREDENTIAL_ENV_NAMES;
-
+//#region <env variable hints>
 /**
  * Logs and returns a pointer to the environment variables behind a rejected request. Returns "" for statuses that
  * are not about credentials, so it can be appended to any error message unconditionally.
@@ -92,5 +115,7 @@ export function credentialHint(scope: CredentialScope, status: number): string {
   );
   return ` - ${scope} rejected the credential, check ${names}`;
 }
+//#endregion
 
-//==============================================================================================
+//#endregion
+//=============================================================================================================

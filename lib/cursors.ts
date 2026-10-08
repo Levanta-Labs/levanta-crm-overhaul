@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { credentialHint, supabaseBaseUrl, supabaseHeaders } from "./endpoints.js";
 import {
   arrayValue,
@@ -6,24 +9,11 @@ import {
   stringValue,
 } from "./json.js";
 
-const CURSOR_TABLE = "Attio_Integrations_Touchpoint_Cursors";
-const DEFAULT_LOOKBACK_MS = 10 * 60 * 1_000;
+//#endregion
+//=============================================================================================================
 
-//[STABILITY] Margin subtracted before a sync parks its cursor at "now". Provider timestamps are generated on the
-//provider's clock and become readable through its API some time later; parking at the local Date.now() skips
-//anything that lands in that gap. Re-reading the margin is free because isAfterCursor rejects the overlap, and the
-//eventIdsAtTimestamp set is retained whenever the last processed event is newer than the parked value.
-export const CURSOR_GRACE_MS = 2 * 60 * 1_000;
-
-//[STABILITY] Outfound's margin, which has to be wider than everyone else's. The other providers publish an event
-//as they record it, so two minutes covers the gap between their clock and their API. Outfound does not: it is an
-//OLAP warehouse fed by a queue, refreshed on a cadence of about three minutes, so an email that has already
-//happened is routinely not yet readable. Parking at the shared two minutes would leave the mark ahead of emails
-//still in flight, and isAfterCursor would then reject them forever when they did land - a silent, permanent loss.
-//Five minutes is that cadence with room over it. Re-reading the margin is free; parking past it is not.
-export const OUTFOUND_CURSOR_GRACE_MS = 5 * 60 * 1_000;
-
-//Interface=====================================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface SyncCursor {
   readonly syncKey: string;
@@ -42,42 +32,30 @@ interface CursorRow {
   readonly cursorTimestamp: string;
 }
 
-//============================================================================================================
+const CURSOR_TABLE = "Attio_Integrations_Touchpoint_Cursors";
+const DEFAULT_LOOKBACK_MS = 10 * 60 * 1_000;
 
-function cursorEndpoint(): URL {
-  return new URL(`/rest/v1/${CURSOR_TABLE}`, supabaseBaseUrl());
-}
+//[STABILITY] Margin subtracted before a sync parks its cursor at "now". Provider timestamps are generated on the
+//provider's clock and become readable through its API some time later; parking at the local Date.now() skips
+//anything that lands in that gap. Re-reading the margin is free because isAfterCursor rejects the overlap, and the
+//eventIdsAtTimestamp set is retained whenever the last processed event is newer than the parked value.
+export const CURSOR_GRACE_MS = 2 * 60 * 1_000;
 
-function parseBoundaryIds(cursorValue: string | null): ReadonlySet<string> {
-  if (!cursorValue) return new Set();
-  try {
-    const parsed: unknown = JSON.parse(cursorValue);
-    if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
-      return new Set(parsed);
-    }
-  } catch {
-    //[STABILITY] Pre-migration rows hold one bare event ID rather than a JSON array.
-  }
-  return new Set([cursorValue]);
-}
+//[STABILITY] Outfound's margin, which has to be wider than everyone else's. The other providers publish an event
+//as they record it, so two minutes covers the gap between their clock and their API. Outfound does not: it is an
+//OLAP warehouse fed by a queue, refreshed on a cadence of about three minutes, so an email that has already
+//happened is routinely not yet readable. Parking at the shared two minutes would leave the mark ahead of emails
+//still in flight, and isAfterCursor would then reject them forever when they did land - a silent, permanent loss.
+//Five minutes is that cadence with room over it. Re-reading the margin is free; parking past it is not.
+export const OUTFOUND_CURSOR_GRACE_MS = 5 * 60 * 1_000;
 
-function parseCursorTimestamp(value: string): number {
-  //Postgres may return the timestamp without a zone suffix; absent one, read it as UTC rather than local time.
-  const includesTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
-  return Date.parse(includesTimezone ? value : `${value}Z`);
-}
+//#endregion
+//=============================================================================================================
 
-function parseCursorRow(value: unknown): CursorRow {
-  if (!isJsonObject(value)) throw new Error("Supabase returned an invalid cursor row");
-  const syncKey = stringValue(value.sync_key);
-  const cursorTimestamp = stringValue(value.cursor_timestamp);
-  const cursorValue = value.cursor_value === null ? null : stringValue(value.cursor_value);
-  if (!syncKey || !cursorTimestamp || (value.cursor_value !== null && !cursorValue)) {
-    throw new Error("Supabase cursor row is missing required fields");
-  }
-  return { syncKey, cursorValue, cursorTimestamp };
-}
+//=============================================================================================================
+//#region <move cursors>
 
+//#region <start and check>
 export function initialCursor(syncKey: string, nowMs = Date.now()): SyncCursor {
   return {
     syncKey,
@@ -99,7 +77,9 @@ export function isAfterCursor(cursor: SyncCursor, event: CursorEvent): boolean {
     (event.timestampMs === cursor.timestampMs && !cursor.eventIdsAtTimestamp.has(event.id))
   );
 }
+//#endregion
 
+//#region <advance>
 //---------------------------------------------------------------------------------------------------------
 //Moves the mark past one handled event. Returns a new cursor; never mutates.
 //FLOW: 1. older than the mark -> unchanged. 2. newer -> mark moves, boundary set resets to this ID alone.
@@ -136,7 +116,15 @@ export function advanceCursorTo(cursor: SyncCursor, timestampMs: number): SyncCu
   //Nothing is known to have occurred at the parked instant, so the boundary set starts empty.
   return { syncKey: cursor.syncKey, timestampMs, eventIdsAtTimestamp: new Set() };
 }
+//#endregion
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <store cursors in supabase>
+
+//#region <read and save>
 //---------------------------------------------------------------------------------------------------------
 //Reads one sync's persisted mark from Supabase (PostgREST).
 //FLOW: 1. build a filtered single-row GET. 2. send with supabaseHeaders (lib/endpoints.ts). 3. throw on non-2xx,
@@ -205,3 +193,45 @@ export async function saveSyncCursor(cursor: SyncCursor): Promise<void> {
     throw new Error(`Supabase cursor write failed (${response.status}): ${await response.text()}${credentialHint("supabase", response.status)}`);
   }
 }
+//#endregion
+
+//#region <parse stored rows>
+function parseBoundaryIds(cursorValue: string | null): ReadonlySet<string> {
+  if (!cursorValue) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(cursorValue);
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+      return new Set(parsed);
+    }
+  } catch {
+    //[STABILITY] Pre-migration rows hold one bare event ID rather than a JSON array.
+  }
+  return new Set([cursorValue]);
+}
+
+function parseCursorTimestamp(value: string): number {
+  //Postgres may return the timestamp without a zone suffix; absent one, read it as UTC rather than local time.
+  const includesTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  return Date.parse(includesTimezone ? value : `${value}Z`);
+}
+
+function parseCursorRow(value: unknown): CursorRow {
+  if (!isJsonObject(value)) throw new Error("Supabase returned an invalid cursor row");
+  const syncKey = stringValue(value.sync_key);
+  const cursorTimestamp = stringValue(value.cursor_timestamp);
+  const cursorValue = value.cursor_value === null ? null : stringValue(value.cursor_value);
+  if (!syncKey || !cursorTimestamp || (value.cursor_value !== null && !cursorValue)) {
+    throw new Error("Supabase cursor row is missing required fields");
+  }
+  return { syncKey, cursorValue, cursorTimestamp };
+}
+//#endregion
+
+//#region <table address>
+function cursorEndpoint(): URL {
+  return new URL(`/rest/v1/${CURSOR_TABLE}`, supabaseBaseUrl());
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

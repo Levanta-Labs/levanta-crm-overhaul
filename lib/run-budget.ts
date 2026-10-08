@@ -1,6 +1,3 @@
-import { reportConfigValue, tunableEnv } from "./env.js";
-
-//=============================================================================================================
 //A wall-clock budget for a sync's per-event loop, so the loop stops of its own accord rather than being killed.
 //
 //WHY THIS EXISTS. Every sync here saves its cursor once, after its loop. Vercel kills a function at the
@@ -17,7 +14,17 @@ import { reportConfigValue, tunableEnv } from "./env.js";
 //guards against two invocations of one sync running at once - they would read the same cursor and double-count
 //every event between them. The 300s default and the 240s budget suit the cadences in vercel.json; shortening a
 //cadence towards the budget requires lowering that sync's budget with it.
+
 //=============================================================================================================
+//#region <import statements>
+
+import { reportConfigValue, tunableEnv } from "./env.js";
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
 
 //[PERF] The margin below maxDuration has to cover the slowest single event still in flight when the budget
 //expires (for a touchpoint, up to eight sequential Attio requests) plus the cursor save and the response.
@@ -31,6 +38,13 @@ export interface RunBudget {
   expired(): boolean;
 }
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <run budget>
+
+//#region <read the budget setting>
 //---------------------------------------------------------------------------------------------------------
 //Reads an optional per-sync override so a stuck backlog can be retuned without a redeploy.
 //[STABILITY] A malformed value falls back rather than throwing. Losing the override is a tuning problem;
@@ -49,7 +63,9 @@ function budgetMs(envName: string): number {
   reportConfigValue(envName, raw);
   return parsed;
 }
+//#endregion
 
+//#region <start and report a budget>
 //---------------------------------------------------------------------------------------------------------
 //Opens a budget measured from startedAtMs, which callers pass as the upperBoundMs they read at the top of the
 //handler - so the budget covers the provider fetch and any pagination too, not just the loop. A wide backlog
@@ -65,3 +81,7 @@ export function startRunBudget(startedAtMs: number, envName: string): RunBudget 
 export function budgetSeconds(budget: RunBudget): number {
   return Math.round(budget.ms / 1_000);
 }
+//#endregion
+
+//#endregion
+//=============================================================================================================

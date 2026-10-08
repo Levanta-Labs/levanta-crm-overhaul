@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import {
   beforeAnyWrite,
   companyCounterSlug,
@@ -32,62 +35,21 @@ import { errorMessage } from "../../lib/json.js";
 import { budgetSeconds, startRunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
+
 const SYNC_KEY = "instantly-touchpoints";
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
 
-/** Keyed on timestamp_created, which is also what the API filters on, so window and cursor agree. */
-export function instantlyCursorEvent(email: InstantlyEmail): CursorEvent {
-  return { id: email.id, timestampMs: Date.parse(email.timestampCreated) };
-}
+//#endregion
+//=============================================================================================================
 
-//---------------------------------------------------------------------------------------------------------
-//Records one email as a touchpoint on the Person and, when linked, the Company.
-//FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
-//counter on the Person. 5. note plus counter on the Company when one is linked.
-//USES: findPersonByEmail, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
-//companyCounterSlug (lib/attio.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function processInstantlyTouchpoint(email: InstantlyEmail): Promise<ProcessingOutcome> {
-  const leadEmail = email.leadEmail;
-  if (!leadEmail) {
-    console.log(`[event] instantly email ${email.id}: skipped - no lead email on the record`);
-    return "skipped";
-  }
-  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
-  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
-  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
-  const person = await beforeAnyWrite(() => findPersonByEmail(leadEmail));
-  if (!person) {
-    console.log(`[event] instantly email ${email.id}: skipped - no Attio person has ${leadEmail}`);
-    return "skipped";
-  }
-  const personId = person.id.record_id;
-  const personName = personLabel(person);
-  //Master TAM is the gate on counting anything: off-list people are read but never written to.
-  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
-    console.log(`[event] instantly email ${email.id}: skipped - person ${personName} is not on the Master TAM list`);
-    return "not_tam";
-  }
-
-  const subject = email.subject ?? "(no subject)";
-  const body = email.bodyText ?? "(no content)";
-  const title = `${subject} — ${email.timestampEmail}`;
-  await createNote("people", personId, title, body, personName);
-  await incrementCounter("people", personId, personCounterSlug("instantly"), personName);
-
-  const companyId = personCompanyId(person);
-  if (companyId) {
-    await createNote(
-      "companies",
-      companyId,
-      title,
-      `Instantly email with ${personDisplayName(person) ?? leadEmail}:\n\n${body}`,
-    );
-    await incrementCounter("companies", companyId, companyCounterSlug("instantly"));
-  }
-  return "processed";
-}
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -261,3 +223,69 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 }
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <record email touchpoints>
+
+//#region <order emails>
+/** Keyed on timestamp_created, which is also what the API filters on, so window and cursor agree. */
+export function instantlyCursorEvent(email: InstantlyEmail): CursorEvent {
+  return { id: email.id, timestampMs: Date.parse(email.timestampCreated) };
+}
+//#endregion
+
+//#region <write to attio>
+//---------------------------------------------------------------------------------------------------------
+//Records one email as a touchpoint on the Person and, when linked, the Company.
+//FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
+//counter on the Person. 5. note plus counter on the Company when one is linked.
+//USES: findPersonByEmail, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
+//companyCounterSlug (lib/attio.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function processInstantlyTouchpoint(email: InstantlyEmail): Promise<ProcessingOutcome> {
+  const leadEmail = email.leadEmail;
+  if (!leadEmail) {
+    console.log(`[event] instantly email ${email.id}: skipped - no lead email on the record`);
+    return "skipped";
+  }
+  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
+  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
+  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
+  const person = await beforeAnyWrite(() => findPersonByEmail(leadEmail));
+  if (!person) {
+    console.log(`[event] instantly email ${email.id}: skipped - no Attio person has ${leadEmail}`);
+    return "skipped";
+  }
+  const personId = person.id.record_id;
+  const personName = personLabel(person);
+  //Master TAM is the gate on counting anything: off-list people are read but never written to.
+  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
+    console.log(`[event] instantly email ${email.id}: skipped - person ${personName} is not on the Master TAM list`);
+    return "not_tam";
+  }
+
+  const subject = email.subject ?? "(no subject)";
+  const body = email.bodyText ?? "(no content)";
+  const title = `${subject} — ${email.timestampEmail}`;
+  await createNote("people", personId, title, body, personName);
+  await incrementCounter("people", personId, personCounterSlug("instantly"), personName);
+
+  const companyId = personCompanyId(person);
+  if (companyId) {
+    await createNote(
+      "companies",
+      companyId,
+      title,
+      `Instantly email with ${personDisplayName(person) ?? leadEmail}:\n\n${body}`,
+    );
+    await incrementCounter("companies", companyId, companyCounterSlug("instantly"));
+  }
+  return "processed";
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

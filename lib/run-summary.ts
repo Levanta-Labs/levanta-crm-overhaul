@@ -1,6 +1,3 @@
-import type { SyncCursor } from "./cursors.js";
-
-//=============================================================================================================
 //The closing line every touchpoint sync prints, and the two parts of it that were getting lost.
 //
 //WHY THIS EXISTS. Each sync ends by logging one "[run] <provider> sync: ..." summary. That line used to sit
@@ -14,8 +11,19 @@ import type { SyncCursor } from "./cursors.js";
 //happened. These two helpers are the parts that differ between a clean run and a failed one. They live here
 //rather than in each handler because a summary that is only sometimes comparable across the four providers is
 //barely better than one that is sometimes absent.
+
+//=============================================================================================================
+//#region <import statements>
+
+import type { SyncCursor } from "./cursors.js";
+
+//#endregion
 //=============================================================================================================
 
+//=============================================================================================================
+//#region <build the summary line>
+
+//#region <run outcome and cursor state>
 //---------------------------------------------------------------------------------------------------------
 //[DEBUG] How the run ended.
 //`stopped` is null when the loop ran to the end, and otherwise the reason it stopped - "budget" or
@@ -42,3 +50,7 @@ export function cursorState(cursor: SyncCursor | null, saved: boolean): string {
   if (saved) return `cursor now ${at}`;
   return `cursor NOT saved (it would have been ${at}) - the previous mark stands and this window is re-read next run`;
 }
+//#endregion
+
+//#endregion
+//=============================================================================================================

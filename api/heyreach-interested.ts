@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { findPersonByEmail, findPersonByLinkedIn } from "../lib/attio.js";
 import {
   fetchHeyReachConversations,
@@ -13,6 +16,12 @@ import {
   type InterestedLead,
 } from "../lib/interested.js";
 import { describeShape, errorMessage, isJsonObject, stringValue, type JsonObject } from "../lib/json.js";
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
 
 export interface HeyReachInterestedFields {
   readonly profileUrl: string | null;
@@ -62,22 +71,6 @@ const LEAD_CONTAINER_NAMES = [
 
 const SENDING_ACCOUNT_HINTS = ["account", "sender", "mailbox", "owner", "user", "seat", "member"] as const;
 
-/** The letters and digits of a key, so one entry covers every casing and separator a relay might spell it with. */
-function normalizeKey(key: string): string {
-  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-/** The accepted spellings of `names`: each on its own, and with the `lead` prefix a flattened payload adds. */
-function keySet(names: readonly string[]): ReadonlySet<string> {
-  const keys = new Set<string>();
-  for (const name of names) {
-    const normalized = normalizeKey(name);
-    keys.add(normalized);
-    keys.add(`lead${normalized}`);
-  }
-  return keys;
-}
-
 const PROFILE_URL_KEYS = keySet(PROFILE_URL_NAMES);
 const EMAIL_KEYS = keySet(EMAIL_NAMES);
 const FIRST_NAME_KEYS = keySet(FIRST_NAME_NAMES);
@@ -87,137 +80,8 @@ const CAMPAIGN_KEYS = keySet(CAMPAIGN_NAMES);
 const EVENT_KEYS = keySet(EVENT_NAMES);
 const LEAD_CONTAINER_KEYS: ReadonlySet<string> = new Set(LEAD_CONTAINER_NAMES.map(normalizeKey));
 
-function namesSendingAccount(key: string): boolean {
-  const normalized = normalizeKey(key);
-  return SENDING_ACCOUNT_HINTS.some((hint) => normalized.includes(hint));
-}
-
 //A bound on the walk below, so a payload that arrives deeply nested or self-referential cannot spin.
 const MAX_CANDIDATES = 32;
-
-//---------------------------------------------------------------------------------------------------------
-//Every object worth searching for the lead, best candidate first.
-//FLOW: breadth-first walk from the payload root, sorting each nested object into one of two buckets by the key
-//that held it: a recognised lead container, or anything else. Returns containers, then the payload itself
-//(a flat body keeps the lead's fields at the top level), then the remainder.
-//[SECURITY] Any key naming the sending side is skipped along with everything beneath it, so the walk cannot
-//return our own LinkedIn sender and cause a Person record to be created for it.
-//[STABILITY] `seen` plus MAX_CANDIDATES bound the walk; a self-referential or deeply nested body cannot spin.
-//---------------------------------------------------------------------------------------------------------
-function leadCandidates(payload: JsonObject): readonly JsonObject[] {
-  const containers: JsonObject[] = [];
-  const others: JsonObject[] = [];
-  const queue: JsonObject[] = [payload];
-  const seen = new Set<JsonObject>([payload]);
-
-  while (queue.length > 0 && containers.length + others.length < MAX_CANDIDATES) {
-    const current = queue.shift();
-    if (!current) break;
-    for (const [key, value] of Object.entries(current)) {
-      if (namesSendingAccount(key)) continue;
-      //Arrays are containers, not a level of nesting: search their entries directly.
-      for (const child of Array.isArray(value) ? value : [value]) {
-        if (!isJsonObject(child) || seen.has(child)) continue;
-        seen.add(child);
-        queue.push(child);
-        if (LEAD_CONTAINER_KEYS.has(normalizeKey(key))) containers.push(child);
-        else others.push(child);
-      }
-    }
-  }
-  return [...containers, payload, ...others];
-}
-
-function firstOf(source: JsonObject, keys: ReadonlySet<string>): string | null {
-  for (const [key, value] of Object.entries(source)) {
-    if (!keys.has(normalizeKey(key))) continue;
-    const text = stringValue(value);
-    if (text) return text;
-  }
-  return null;
-}
-
-function readFields(source: JsonObject): HeyReachInterestedFields {
-  return {
-    profileUrl: firstOf(source, PROFILE_URL_KEYS),
-    email: firstOf(source, EMAIL_KEYS),
-    firstName: firstOf(source, FIRST_NAME_KEYS),
-    lastName: firstOf(source, LAST_NAME_KEYS),
-    companyName: firstOf(source, COMPANY_KEYS),
-    campaignName: firstOf(source, CAMPAIGN_KEYS),
-  };
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Extracts the lead from a payload whose shape is not under our control.
-//FLOW: 1. leadCandidates ranks the objects to try. 2. readFields reads all five fields off one candidate.
-//3. first candidate carrying a profile URL or an email wins. 4. none -> log the shape and throw.
-//All five fields come from the SAME object, so a name is never read off one record and pinned to another.
-//---------------------------------------------------------------------------------------------------------
-export function parseHeyReachInterestedWebhook(value: unknown): HeyReachInterestedFields {
-  if (!isJsonObject(value)) throw new Error("HeyReach webhook payload must be an object");
-  for (const candidate of leadCandidates(value)) {
-    const fields = readFields(candidate);
-    if (fields.profileUrl || fields.email) return fields;
-  }
-  //[DEBUG][SECURITY] describeShape reports keys and types only, never values, so an unmapped payload can be
-  //diagnosed from the log without recording anybody's name, address, or message text.
-  const shape = describeShape(value);
-  console.error(
-    `[route] heyreach-interested: rejected - no lead identifier found. Looked for ${PROFILE_URL_NAMES.join(", ")} and ${EMAIL_NAMES.join(", ")} - each also accepted with a lead prefix, in any casing - on every object except the sending account. Payload shape was ${shape}`,
-  );
-  throw new Error(
-    `HeyReach webhook payload is missing profileUrl and email. Payload shape was ${shape}`,
-  );
-}
-
-//---------------------------------------------------------------------------------------------------------
-//[DEBUG] What HeyReach called this delivery, read off the TOP LEVEL only.
-//
-//WHY IT IS LOGGED AND NOT ACTED ON. The webhook is configured in HeyReach, one event type per registration,
-//and what is registered is edited there without a deploy - so the route cannot assume a name and stay correct.
-//The log is where that configuration becomes visible: a burst of deliveries for one lead reads as either the
-//same event name repeated (one registration firing per campaign, or a lead auto-tagged again on a later
-//message) or as different names (more than one registration pointed here). Those have different fixes, and
-//nothing in the payload distinguishes them once the name is discarded.
-//Top level only because an event name describes the delivery, not the lead - the nested walk that finds a lead
-//would happily read some unrelated `event` off a message or a campaign object.
-//USES: firstOf (this module). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function heyReachEventName(value: unknown): string | null {
-  return isJsonObject(value) ? firstOf(value, EVENT_KEYS) : null;
-}
-
-//---------------------------------------------------------------------------------------------------------
-//The lead's conversations, or nothing if HeyReach would not hand them over.
-//
-//[STABILITY] A throttled read costs the history, never the lead. HeyReach's allowance is one pool shared
-//across every endpoint, and the touchpoint sync draws on it every five minutes with a window that grows
-//through the UTC day - so an interested webhook can be refused through no fault of its own. Raising here would
-//500 the webhook and lose the lead until HeyReach retried it, to save a note body and some enrichment. The
-//lead is the part worth keeping; the conversation stays readable in HeyReach.
-//
-//This mirrors what api/instantly-interested.ts does with its own thread read, deliberately: the two routes
-//have the same shape and the same failure, and one degrading while the other 500s is the kind of difference
-//nobody discovers until the day it matters.
-//Anything that is not a rate limit still raises - an unreachable API or a malformed page is not a reason to
-//record a lead with half its detail missing and no sign that anything went wrong.
-//USES: fetchHeyReachConversations (lib/heyreach.ts), errorMessage (lib/json.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function readHeyReachConversations(
-  profileUrl: string | null,
-): Promise<{ readonly conversations: readonly HeyReachConversation[]; readonly throttled: boolean }> {
-  if (!profileUrl) return { conversations: [], throttled: false };
-  try {
-    return { conversations: await fetchHeyReachConversations({ profileUrl }), throttled: false };
-  } catch (error) {
-    if (!(error instanceof HeyReachRateLimitError)) throw error;
-    console.warn(
-      `[route] heyreach-interested: the conversation for ${profileUrl} could not be read - ${errorMessage(error)}. The lead is recorded without it.`,
-    );
-    return { conversations: [], throttled: true };
-  }
-}
 
 //[LOGIC] Said plainly rather than reusing formatHeyReachThread's empty-thread text, which would claim there is
 //no history when the truth is that it could not be read - a difference that matters to whoever opens the note
@@ -225,52 +89,11 @@ export async function readHeyReachConversations(
 const HISTORY_UNAVAILABLE =
   "The message history could not be read from HeyReach when this lead was recorded, because the API rate limit had been reached. It is not lost - the conversation is still in HeyReach.";
 
-/** [LOGIC] Oldest first, so the note reads top to bottom. USES: nothing. Pure. */
-export function formatHeyReachThread(messages: readonly HeyReachMessage[]): string {
-  if (messages.length === 0) return "No message history found.";
-  return [...messages]
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
-    .map((message) => `**${message.createdAt}**\n${message.body}`)
-    .join("\n\n---\n\n");
-}
+//#endregion
+//=============================================================================================================
 
-//---------------------------------------------------------------------------------------------------------
-//The lead as the shared workflow sees it: the webhook body, plus whatever the conversation's correspondent
-//profile adds.
-//That profile costs nothing extra. The route already fetches the conversation for the note, and every entry
-//carries the lead's position, headline, location, company, and all three of HeyReach's address fields - which
-//this route previously discarded by flat-mapping straight to `.messages`.
-//Webhook values win where both carry the same field: the webhook describes the event that just happened.
-//USES: interestedLead (lib/interested.ts). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function heyReachLead(
-  fields: HeyReachInterestedFields,
-  profile: HeyReachProfile | null,
-  occurredAtMs: number,
-): InterestedLead {
-  //HeyReach spells an address three ways and any of them may be the only one set. Order is confidence: what
-  //the workspace entered by hand, then what HeyReach enriched, then whatever the profile itself carried.
-  const emails = [
-    fields.email,
-    profile?.customEmailAddress ?? null,
-    profile?.enrichedEmailAddress ?? null,
-    profile?.emailAddress ?? null,
-  ].filter((email): email is string => Boolean(email));
-
-  return interestedLead("heyreach", {
-    emails: [...new Set(emails)],
-    linkedin: fields.profileUrl ?? profile?.profileUrl ?? null,
-    firstName: fields.firstName ?? profile?.firstName ?? null,
-    lastName: fields.lastName ?? profile?.lastName ?? null,
-    jobTitle: profile?.position ?? null,
-    //The headline is what the person says they do; `about` is the longer version. Either beats nothing.
-    description: profile?.headline ?? profile?.about ?? null,
-    location: profile?.location ?? null,
-    companyName: fields.companyName ?? profile?.companyName ?? null,
-    campaignName: fields.campaignName,
-    occurredAtMs,
-  });
-}
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. The relay posts here when a lead replies or is auto-tagged positive.
@@ -348,3 +171,220 @@ export async function POST(request: Request): Promise<Response> {
     return serverError("HeyReach interested webhook error", error);
   }
 }
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <read the webhook>
+
+//#region <find the lead>
+//---------------------------------------------------------------------------------------------------------
+//Extracts the lead from a payload whose shape is not under our control.
+//FLOW: 1. leadCandidates ranks the objects to try. 2. readFields reads all five fields off one candidate.
+//3. first candidate carrying a profile URL or an email wins. 4. none -> log the shape and throw.
+//All five fields come from the SAME object, so a name is never read off one record and pinned to another.
+//---------------------------------------------------------------------------------------------------------
+export function parseHeyReachInterestedWebhook(value: unknown): HeyReachInterestedFields {
+  if (!isJsonObject(value)) throw new Error("HeyReach webhook payload must be an object");
+  for (const candidate of leadCandidates(value)) {
+    const fields = readFields(candidate);
+    if (fields.profileUrl || fields.email) return fields;
+  }
+  //[DEBUG][SECURITY] describeShape reports keys and types only, never values, so an unmapped payload can be
+  //diagnosed from the log without recording anybody's name, address, or message text.
+  const shape = describeShape(value);
+  console.error(
+    `[route] heyreach-interested: rejected - no lead identifier found. Looked for ${PROFILE_URL_NAMES.join(", ")} and ${EMAIL_NAMES.join(", ")} - each also accepted with a lead prefix, in any casing - on every object except the sending account. Payload shape was ${shape}`,
+  );
+  throw new Error(
+    `HeyReach webhook payload is missing profileUrl and email. Payload shape was ${shape}`,
+  );
+}
+
+//---------------------------------------------------------------------------------------------------------
+//Every object worth searching for the lead, best candidate first.
+//FLOW: breadth-first walk from the payload root, sorting each nested object into one of two buckets by the key
+//that held it: a recognised lead container, or anything else. Returns containers, then the payload itself
+//(a flat body keeps the lead's fields at the top level), then the remainder.
+//[SECURITY] Any key naming the sending side is skipped along with everything beneath it, so the walk cannot
+//return our own LinkedIn sender and cause a Person record to be created for it.
+//[STABILITY] `seen` plus MAX_CANDIDATES bound the walk; a self-referential or deeply nested body cannot spin.
+//---------------------------------------------------------------------------------------------------------
+function leadCandidates(payload: JsonObject): readonly JsonObject[] {
+  const containers: JsonObject[] = [];
+  const others: JsonObject[] = [];
+  const queue: JsonObject[] = [payload];
+  const seen = new Set<JsonObject>([payload]);
+
+  while (queue.length > 0 && containers.length + others.length < MAX_CANDIDATES) {
+    const current = queue.shift();
+    if (!current) break;
+    for (const [key, value] of Object.entries(current)) {
+      if (namesSendingAccount(key)) continue;
+      //Arrays are containers, not a level of nesting: search their entries directly.
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (!isJsonObject(child) || seen.has(child)) continue;
+        seen.add(child);
+        queue.push(child);
+        if (LEAD_CONTAINER_KEYS.has(normalizeKey(key))) containers.push(child);
+        else others.push(child);
+      }
+    }
+  }
+  return [...containers, payload, ...others];
+}
+
+function readFields(source: JsonObject): HeyReachInterestedFields {
+  return {
+    profileUrl: firstOf(source, PROFILE_URL_KEYS),
+    email: firstOf(source, EMAIL_KEYS),
+    firstName: firstOf(source, FIRST_NAME_KEYS),
+    lastName: firstOf(source, LAST_NAME_KEYS),
+    companyName: firstOf(source, COMPANY_KEYS),
+    campaignName: firstOf(source, CAMPAIGN_KEYS),
+  };
+}
+
+function firstOf(source: JsonObject, keys: ReadonlySet<string>): string | null {
+  for (const [key, value] of Object.entries(source)) {
+    if (!keys.has(normalizeKey(key))) continue;
+    const text = stringValue(value);
+    if (text) return text;
+  }
+  return null;
+}
+//#endregion
+
+//#region <match key names>
+/** The letters and digits of a key, so one entry covers every casing and separator a relay might spell it with. */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** The accepted spellings of `names`: each on its own, and with the `lead` prefix a flattened payload adds. */
+function keySet(names: readonly string[]): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const name of names) {
+    const normalized = normalizeKey(name);
+    keys.add(normalized);
+    keys.add(`lead${normalized}`);
+  }
+  return keys;
+}
+
+function namesSendingAccount(key: string): boolean {
+  const normalized = normalizeKey(key);
+  return SENDING_ACCOUNT_HINTS.some((hint) => normalized.includes(hint));
+}
+//#endregion
+
+//#region <event name for logs>
+//---------------------------------------------------------------------------------------------------------
+//[DEBUG] What HeyReach called this delivery, read off the TOP LEVEL only.
+//
+//WHY IT IS LOGGED AND NOT ACTED ON. The webhook is configured in HeyReach, one event type per registration,
+//and what is registered is edited there without a deploy - so the route cannot assume a name and stay correct.
+//The log is where that configuration becomes visible: a burst of deliveries for one lead reads as either the
+//same event name repeated (one registration firing per campaign, or a lead auto-tagged again on a later
+//message) or as different names (more than one registration pointed here). Those have different fixes, and
+//nothing in the payload distinguishes them once the name is discarded.
+//Top level only because an event name describes the delivery, not the lead - the nested walk that finds a lead
+//would happily read some unrelated `event` off a message or a campaign object.
+//USES: firstOf (this module). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function heyReachEventName(value: unknown): string | null {
+  return isJsonObject(value) ? firstOf(value, EVENT_KEYS) : null;
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <record the interested lead>
+
+//#region <message history>
+//---------------------------------------------------------------------------------------------------------
+//The lead's conversations, or nothing if HeyReach would not hand them over.
+//
+//[STABILITY] A throttled read costs the history, never the lead. HeyReach's allowance is one pool shared
+//across every endpoint, and the touchpoint sync draws on it every five minutes with a window that grows
+//through the UTC day - so an interested webhook can be refused through no fault of its own. Raising here would
+//500 the webhook and lose the lead until HeyReach retried it, to save a note body and some enrichment. The
+//lead is the part worth keeping; the conversation stays readable in HeyReach.
+//
+//This mirrors what api/instantly-interested.ts does with its own thread read, deliberately: the two routes
+//have the same shape and the same failure, and one degrading while the other 500s is the kind of difference
+//nobody discovers until the day it matters.
+//Anything that is not a rate limit still raises - an unreachable API or a malformed page is not a reason to
+//record a lead with half its detail missing and no sign that anything went wrong.
+//USES: fetchHeyReachConversations (lib/heyreach.ts), errorMessage (lib/json.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function readHeyReachConversations(
+  profileUrl: string | null,
+): Promise<{ readonly conversations: readonly HeyReachConversation[]; readonly throttled: boolean }> {
+  if (!profileUrl) return { conversations: [], throttled: false };
+  try {
+    return { conversations: await fetchHeyReachConversations({ profileUrl }), throttled: false };
+  } catch (error) {
+    if (!(error instanceof HeyReachRateLimitError)) throw error;
+    console.warn(
+      `[route] heyreach-interested: the conversation for ${profileUrl} could not be read - ${errorMessage(error)}. The lead is recorded without it.`,
+    );
+    return { conversations: [], throttled: true };
+  }
+}
+
+/** [LOGIC] Oldest first, so the note reads top to bottom. USES: nothing. Pure. */
+export function formatHeyReachThread(messages: readonly HeyReachMessage[]): string {
+  if (messages.length === 0) return "No message history found.";
+  return [...messages]
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .map((message) => `**${message.createdAt}**\n${message.body}`)
+    .join("\n\n---\n\n");
+}
+//#endregion
+
+//#region <shape for attio>
+//---------------------------------------------------------------------------------------------------------
+//The lead as the shared workflow sees it: the webhook body, plus whatever the conversation's correspondent
+//profile adds.
+//That profile costs nothing extra. The route already fetches the conversation for the note, and every entry
+//carries the lead's position, headline, location, company, and all three of HeyReach's address fields - which
+//this route previously discarded by flat-mapping straight to `.messages`.
+//Webhook values win where both carry the same field: the webhook describes the event that just happened.
+//USES: interestedLead (lib/interested.ts). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function heyReachLead(
+  fields: HeyReachInterestedFields,
+  profile: HeyReachProfile | null,
+  occurredAtMs: number,
+): InterestedLead {
+  //HeyReach spells an address three ways and any of them may be the only one set. Order is confidence: what
+  //the workspace entered by hand, then what HeyReach enriched, then whatever the profile itself carried.
+  const emails = [
+    fields.email,
+    profile?.customEmailAddress ?? null,
+    profile?.enrichedEmailAddress ?? null,
+    profile?.emailAddress ?? null,
+  ].filter((email): email is string => Boolean(email));
+
+  return interestedLead("heyreach", {
+    emails: [...new Set(emails)],
+    linkedin: fields.profileUrl ?? profile?.profileUrl ?? null,
+    firstName: fields.firstName ?? profile?.firstName ?? null,
+    lastName: fields.lastName ?? profile?.lastName ?? null,
+    jobTitle: profile?.position ?? null,
+    //The headline is what the person says they do; `about` is the longer version. Either beats nothing.
+    description: profile?.headline ?? profile?.about ?? null,
+    location: profile?.location ?? null,
+    companyName: fields.companyName ?? profile?.companyName ?? null,
+    campaignName: fields.campaignName,
+    occurredAtMs,
+  });
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

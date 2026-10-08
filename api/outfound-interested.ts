@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { findPersonByEmail, findPersonByLinkedIn } from "../lib/attio.js";
 import { hasWebhookSecret, json, requestJson, serverError } from "../lib/http.js";
 import {
@@ -11,6 +14,12 @@ import {
   type OutfoundLead,
 } from "../lib/outfound.js";
 import { describeShape, errorMessage, isJsonObject, stringValue } from "../lib/json.js";
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
 
 export interface OutfoundInterestedFields {
   /** The lead category that fired the relay, verbatim - "Interested", "Meeting Booked", "Refer Request". */
@@ -29,133 +38,11 @@ export interface OutfoundInterestedFields {
   readonly timestamp: string | null;
 }
 
-//---------------------------------------------------------------------------------------------------------
-//Outfound posts a flat body. Only lead_email is required of it here.
-//
-//NO CATEGORY IS FILTERED ON, deliberately. Which lead categories fire the relay is configured on Outfound's
-//side, under the Webhook Relay's own category checkboxes, and only positive-sentiment categories are forwarded
-//at all. Restating that list here would mean two places to edit and a redeploy to change one of them, so
-//everything that arrives authenticated and parseable is recorded. The category is logged, never written.
-//
-//`event_type` is therefore read for the log alone, and its absence is not an error: the relay carries the
-//category name in it, but a body without one is still a lead worth recording.
-//---------------------------------------------------------------------------------------------------------
-export function parseOutfoundInterestedWebhook(value: unknown): OutfoundInterestedFields {
-  if (!isJsonObject(value)) throw new Error("Outfound webhook payload must be an object");
-  const email = stringValue(value.lead_email);
-  if (!email) {
-    //[DEBUG][SECURITY] describeShape reports keys and types only, never values, so a payload that does not match
-    //what the spec described can be diagnosed from the log without recording anybody's name or message text.
-    //Worth the lines on this provider in particular: the API is private, the relay's payload is not versioned,
-    //and a silent shape change would otherwise surface only as a bare "missing lead_email" with nothing to act on.
-    const shape = describeShape(value);
-    console.error(
-      `[route] outfound-interested: rejected - no lead_email on the payload, which is the one field there is nothing to record without. Payload shape was ${shape}`,
-    );
-    throw new Error(`Outfound webhook is missing lead_email. Payload shape was ${shape}`);
-  }
-  return {
-    //category_name and event_type carry the same string; event_type is the documented one, so it leads.
-    eventType: stringValue(value.event_type) ?? stringValue(value.category_name),
-    email,
-    firstName: stringValue(value.first_name),
-    lastName: stringValue(value.last_name),
-    companyName: stringValue(value.company_name),
-    companyDomain: stringValue(value.company_domain),
-    jobTitle: stringValue(value.job_title),
-    linkedin: stringValue(value.linkedin),
-    website: stringValue(value.website),
-    industry: stringValue(value.industry),
-    campaignName: stringValue(value.campaign_name),
-    timestamp: stringValue(value.timestamp),
-  };
-}
+//#endregion
+//=============================================================================================================
 
-/**
- * [LOGIC] When the event happened, by Outfound's clock rather than ours. The warehouse lags by minutes, so the
- * receiving clock would date an interested lead by when the relay got through rather than when they replied.
- * An unparseable or absent timestamp falls back to `nowMs` - a slightly late date beats no date at all.
- * USES: nothing. Pure.
- */
-export function outfoundOccurredAtMs(timestamp: string | null, nowMs: number): number {
-  if (!timestamp) return nowMs;
-  const parsed = Date.parse(timestamp);
-  return Number.isFinite(parsed) ? parsed : nowMs;
-}
-
-/** Renders the correspondence oldest-first so the note reads top to bottom. Sorted on the email timestamp. */
-export function formatOutfoundThread(
-  conversations: readonly OutfoundConversation[],
-  campaignName: string | null,
-): string {
-  if (conversations.length === 0) {
-    return campaignName
-      ? `No email history found. Campaign: ${campaignName}`
-      : "No email history found.";
-  }
-  return [...conversations]
-    .sort((left, right) => Date.parse(left.timestampEmail) - Date.parse(right.timestampEmail))
-    .map(
-      (conversation) =>
-        `**${conversation.timestampEmail}** (${conversation.conversationType})\n${conversation.subject ?? ""}\n\n${conversation.body ?? ""}`,
-    )
-    .join("\n\n---\n\n");
-}
-
-//---------------------------------------------------------------------------------------------------------
-//The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
-//Outfound's webhook is the richest of the three - it already carries the name, company, domain, job title,
-//LinkedIn URL, website and industry, where Instantly's carries an address and little else. The lookup is still
-//worth its request: seniority, the company's headcount, revenue and country come only from there.
-//Webhook values win where both carry the same field: the webhook describes the event that just happened, the
-//record describes the row as the warehouse holds it.
-//
-//No phone. Outfound's enrichment has no phone number anywhere in it, so nothing is mapped to Attio's - which is
-//why this route, unlike Instantly's, needs no toE164 (lib/phone.ts).
-//USES: interestedLead (lib/interested.ts). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function outfoundLead(
-  fields: OutfoundInterestedFields,
-  enriched: OutfoundLead | null,
-  occurredAtMs: number,
-): InterestedLead {
-  return interestedLead("outfound", {
-    emails: [fields.email],
-    firstName: fields.firstName ?? enriched?.firstName ?? null,
-    lastName: fields.lastName ?? enriched?.lastName ?? null,
-    linkedin: fields.linkedin ?? enriched?.linkedin ?? null,
-    jobTitle: fields.jobTitle ?? enriched?.jobTitle ?? null,
-    //Outfound's location is an ISO 3166-1 alpha-2 country code on the COMPANY, not a place on the person, and
-    //companyAddress is left null for the same reason: parsePostalAddress (lib/interested.ts) needs an address,
-    //and "US" is not one. The country still reads correctly as a Person location, which is where it goes.
-    location: enriched?.location ?? null,
-    companyName: fields.companyName ?? enriched?.companyName ?? null,
-    companyDomain: fields.companyDomain ?? enriched?.companyDomain ?? null,
-    employeeCount: enriched?.headcount ?? null,
-    annualRevenue: enriched?.revenue ?? null,
-    industry: fields.industry ?? enriched?.industry ?? null,
-    website: fields.website ?? null,
-    campaignName: fields.campaignName,
-    occurredAtMs,
-  });
-}
-
-/**
- * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
- * failure is logged and swallowed rather than raised. It also supplies the note's history, which is why a
- * failure here costs the thread as well as the extra fields - formatOutfoundThread then renders the empty case.
- * USES: fetchOutfoundLead (lib/outfound.ts), errorMessage (lib/json.ts).
- */
-async function enrichFromOutfound(email: string): Promise<OutfoundLead | null> {
-  try {
-    return await fetchOutfoundLead(email);
-  } catch (error) {
-    console.warn(
-      `[route] outfound-interested: lead lookup for ${email} failed, so only the webhook's own fields are used and the note carries no history - ${errorMessage(error)}`,
-    );
-    return null;
-  }
-}
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Outfound's Webhook Relay posts here when a lead is categorized.
@@ -239,3 +126,156 @@ export async function POST(request: Request): Promise<Response> {
     return serverError("Outfound interested webhook error", error);
   }
 }
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <read the webhook>
+
+//#region <parse the body>
+//---------------------------------------------------------------------------------------------------------
+//Outfound posts a flat body. Only lead_email is required of it here.
+//
+//NO CATEGORY IS FILTERED ON, deliberately. Which lead categories fire the relay is configured on Outfound's
+//side, under the Webhook Relay's own category checkboxes, and only positive-sentiment categories are forwarded
+//at all. Restating that list here would mean two places to edit and a redeploy to change one of them, so
+//everything that arrives authenticated and parseable is recorded. The category is logged, never written.
+//
+//`event_type` is therefore read for the log alone, and its absence is not an error: the relay carries the
+//category name in it, but a body without one is still a lead worth recording.
+//---------------------------------------------------------------------------------------------------------
+export function parseOutfoundInterestedWebhook(value: unknown): OutfoundInterestedFields {
+  if (!isJsonObject(value)) throw new Error("Outfound webhook payload must be an object");
+  const email = stringValue(value.lead_email);
+  if (!email) {
+    //[DEBUG][SECURITY] describeShape reports keys and types only, never values, so a payload that does not match
+    //what the spec described can be diagnosed from the log without recording anybody's name or message text.
+    //Worth the lines on this provider in particular: the API is private, the relay's payload is not versioned,
+    //and a silent shape change would otherwise surface only as a bare "missing lead_email" with nothing to act on.
+    const shape = describeShape(value);
+    console.error(
+      `[route] outfound-interested: rejected - no lead_email on the payload, which is the one field there is nothing to record without. Payload shape was ${shape}`,
+    );
+    throw new Error(`Outfound webhook is missing lead_email. Payload shape was ${shape}`);
+  }
+  return {
+    //category_name and event_type carry the same string; event_type is the documented one, so it leads.
+    eventType: stringValue(value.event_type) ?? stringValue(value.category_name),
+    email,
+    firstName: stringValue(value.first_name),
+    lastName: stringValue(value.last_name),
+    companyName: stringValue(value.company_name),
+    companyDomain: stringValue(value.company_domain),
+    jobTitle: stringValue(value.job_title),
+    linkedin: stringValue(value.linkedin),
+    website: stringValue(value.website),
+    industry: stringValue(value.industry),
+    campaignName: stringValue(value.campaign_name),
+    timestamp: stringValue(value.timestamp),
+  };
+}
+//#endregion
+
+//#region <event time>
+/**
+ * [LOGIC] When the event happened, by Outfound's clock rather than ours. The warehouse lags by minutes, so the
+ * receiving clock would date an interested lead by when the relay got through rather than when they replied.
+ * An unparseable or absent timestamp falls back to `nowMs` - a slightly late date beats no date at all.
+ * USES: nothing. Pure.
+ */
+export function outfoundOccurredAtMs(timestamp: string | null, nowMs: number): number {
+  if (!timestamp) return nowMs;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : nowMs;
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <record the interested lead>
+
+//#region <read the lead record>
+/**
+ * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
+ * failure is logged and swallowed rather than raised. It also supplies the note's history, which is why a
+ * failure here costs the thread as well as the extra fields - formatOutfoundThread then renders the empty case.
+ * USES: fetchOutfoundLead (lib/outfound.ts), errorMessage (lib/json.ts).
+ */
+async function enrichFromOutfound(email: string): Promise<OutfoundLead | null> {
+  try {
+    return await fetchOutfoundLead(email);
+  } catch (error) {
+    console.warn(
+      `[route] outfound-interested: lead lookup for ${email} failed, so only the webhook's own fields are used and the note carries no history - ${errorMessage(error)}`,
+    );
+    return null;
+  }
+}
+//#endregion
+
+//#region <shape for attio>
+//---------------------------------------------------------------------------------------------------------
+//The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
+//Outfound's webhook is the richest of the three - it already carries the name, company, domain, job title,
+//LinkedIn URL, website and industry, where Instantly's carries an address and little else. The lookup is still
+//worth its request: seniority, the company's headcount, revenue and country come only from there.
+//Webhook values win where both carry the same field: the webhook describes the event that just happened, the
+//record describes the row as the warehouse holds it.
+//
+//No phone. Outfound's enrichment has no phone number anywhere in it, so nothing is mapped to Attio's - which is
+//why this route, unlike Instantly's, needs no toE164 (lib/phone.ts).
+//USES: interestedLead (lib/interested.ts). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function outfoundLead(
+  fields: OutfoundInterestedFields,
+  enriched: OutfoundLead | null,
+  occurredAtMs: number,
+): InterestedLead {
+  return interestedLead("outfound", {
+    emails: [fields.email],
+    firstName: fields.firstName ?? enriched?.firstName ?? null,
+    lastName: fields.lastName ?? enriched?.lastName ?? null,
+    linkedin: fields.linkedin ?? enriched?.linkedin ?? null,
+    jobTitle: fields.jobTitle ?? enriched?.jobTitle ?? null,
+    //Outfound's location is an ISO 3166-1 alpha-2 country code on the COMPANY, not a place on the person, and
+    //companyAddress is left null for the same reason: parsePostalAddress (lib/interested.ts) needs an address,
+    //and "US" is not one. The country still reads correctly as a Person location, which is where it goes.
+    location: enriched?.location ?? null,
+    companyName: fields.companyName ?? enriched?.companyName ?? null,
+    companyDomain: fields.companyDomain ?? enriched?.companyDomain ?? null,
+    employeeCount: enriched?.headcount ?? null,
+    annualRevenue: enriched?.revenue ?? null,
+    industry: fields.industry ?? enriched?.industry ?? null,
+    website: fields.website ?? null,
+    campaignName: fields.campaignName,
+    occurredAtMs,
+  });
+}
+//#endregion
+
+//#region <format the email thread>
+/** Renders the correspondence oldest-first so the note reads top to bottom. Sorted on the email timestamp. */
+export function formatOutfoundThread(
+  conversations: readonly OutfoundConversation[],
+  campaignName: string | null,
+): string {
+  if (conversations.length === 0) {
+    return campaignName
+      ? `No email history found. Campaign: ${campaignName}`
+      : "No email history found.";
+  }
+  return [...conversations]
+    .sort((left, right) => Date.parse(left.timestampEmail) - Date.parse(right.timestampEmail))
+    .map(
+      (conversation) =>
+        `**${conversation.timestampEmail}** (${conversation.conversationType})\n${conversation.subject ?? ""}\n\n${conversation.body ?? ""}`,
+    )
+    .join("\n\n---\n\n");
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

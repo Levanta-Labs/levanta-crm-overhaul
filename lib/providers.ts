@@ -1,8 +1,3 @@
-import { blockInstantlyLead } from "./instantly.js";
-import { stopLeadInActiveCampaigns } from "./heyreach.js";
-import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js";
-
-//=============================================================================================================
 //The register of third-party platforms. Adding a fourth is meant to be an APPEND here plus its own extractor,
 //and nothing else - no edit to the shared interested workflow, the Attio mapping, or the write path.
 //
@@ -16,9 +11,65 @@ import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js";
 //                 no campaign or blocklist API and nothing to call.
 //
 //A new platform is added to whichever registers apply. Everything downstream is derived.
+
+//=============================================================================================================
+//#region <import statements>
+
+import { blockInstantlyLead } from "./instantly.js";
+import { stopLeadInActiveCampaigns } from "./heyreach.js";
+import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js";
+
+//#endregion
 //=============================================================================================================
 
-//#region sources
+//=============================================================================================================
+//#region <types and globals>
+
+/** Derived from SOURCES, so appending an entry there is what adds a provider - there is no second list. */
+export type Provider = keyof typeof SOURCES;
+
+/** The source words these workflows can produce. The full option lists are longer; these are ours. */
+type SourceCategory = "COLD_EMAIL" | "COLD_CALL" | "LI_OUTBOUND";
+type SubSourceParty = "LEVANTA" | "SAS";
+
+interface AttributionSchema {
+  readonly sourceSlug: string;
+  readonly subSourceSlug: string;
+  readonly source: Readonly<Record<SourceCategory, string>>;
+  readonly subSource: Readonly<Record<SubSourceParty, string>>;
+}
+
+/** Which object's attribution attributes to write. Only these two carry any. */
+export type AttributedObject = "people" | "deals";
+
+export interface AttributionOptionCheck {
+  readonly object: AttributedObject;
+  readonly slug: string;
+  readonly optionIds: readonly string[];
+}
+
+/** Everything any suppression channel might need to identify a lead on its own platform. */
+export interface SuppressionTargets {
+  readonly personId: string;
+  readonly personName: string;
+  readonly email: string | null;
+  /** A LinkedIn profile URL, whichever provider happened to supply it. */
+  readonly profileUrl: string | null;
+}
+
+export type SuppressionChannelResult =
+  //`detail` is folded into the summary log line - a count, an identifier, whatever the platform reports back.
+  | { readonly status: "suppressed"; readonly detail?: string }
+  //Not a failure: the lead simply is not present on this platform to suppress, usually for want of the one
+  //identifier it works by. `reason` says which.
+  | { readonly status: "skipped"; readonly reason: string };
+
+export interface SuppressionChannel {
+  /** Named in logs and in the failure list a route returns, so keep it recognisable. */
+  readonly platform: string;
+  readonly suppress: (targets: SuppressionTargets) => Promise<SuppressionChannelResult>;
+}
+
 //---------------------------------------------------------------------------------------------------------
 //Every platform that can report interest. `displayName` is the only thing a new entry has to decide, and it is
 //load-bearing: the source strings written into Attio and the note titles are derived from it, so it must be
@@ -41,7 +92,6 @@ const SOURCES = {
   outfound: { displayName: "Outfound" },
 } as const;
 
-//=============================================================================================================
 //Attribution: which discrete source each provider represents, on the Person and on the Deal.
 //
 //THE TWO OBJECTS HAVE DIFFERENT OPTION IDS FOR THE SAME WORDS. "Cold Email" on a Person is
@@ -63,11 +113,6 @@ const SOURCES = {
 //
 //SUB-SOURCE IS ABOUT WHOSE PLATFORM SENT IT, not which tool. Instantly, HeyReach and Aircall are Levanta's own;
 //Outfound is the SAS platform.
-//=============================================================================================================
-
-/** The source words these workflows can produce. The full option lists are longer; these are ours. */
-type SourceCategory = "COLD_EMAIL" | "COLD_CALL" | "LI_OUTBOUND";
-type SubSourceParty = "LEVANTA" | "SAS";
 
 //[LOGIC] One entry per provider, checked against Provider so adding a fifth will not compile until it is
 //attributed. That is deliberate: a new provider silently writing no source is the failure this prevents.
@@ -96,13 +141,6 @@ const PARTY_TITLES: Readonly<Record<SubSourceParty, string>> = {
   LEVANTA: "Levanta",
   SAS: "SAS",
 };
-
-interface AttributionSchema {
-  readonly sourceSlug: string;
-  readonly subSourceSlug: string;
-  readonly source: Readonly<Record<SourceCategory, string>>;
-  readonly subSource: Readonly<Record<SubSourceParty, string>>;
-}
 
 /** The `deals` object's attribution attributes and their option IDs. */
 const DEAL_SCHEMA: AttributionSchema = {
@@ -134,122 +172,12 @@ const PERSON_SCHEMA: AttributionSchema = {
   },
 };
 
-/** Which object's attribution attributes to write. Only these two carry any. */
-export type AttributedObject = "people" | "deals";
-
 const SCHEMAS: Readonly<Record<AttributedObject, AttributionSchema>> = {
   people: PERSON_SCHEMA,
   deals: DEAL_SCHEMA,
 };
 
-//---------------------------------------------------------------------------------------------------------
-//The attribution attributes for one provider on one object, ready to merge into that object's values.
-//Returns the slugs and values together so a caller cannot pair one object's slug with another's ID: the only
-//way to get an ID out of here is to ask for the object it belongs to.
-//USES: PROVIDER_ATTRIBUTION, SCHEMAS (this module). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function attributionValues(
-  object: AttributedObject,
-  provider: Provider,
-): Readonly<Record<string, readonly { readonly option: string }[]>> {
-  const { category, party } = PROVIDER_ATTRIBUTION[provider];
-  const schema = SCHEMAS[object];
-  return {
-    [schema.sourceSlug]: [{ option: schema.source[category] }],
-    [schema.subSourceSlug]: [{ option: schema.subSource[party] }],
-  };
-}
-
-/** [LOGIC] Every attribution slug, so ALWAYS_OVERWRITE can name them without repeating the strings. Pure. */
-export function attributionSlugs(): readonly string[] {
-  return Object.values(SCHEMAS).flatMap((schema) => [schema.sourceSlug, schema.subSourceSlug]);
-}
-
-//---------------------------------------------------------------------------------------------------------
-//The word an option ID stands for, or null if it is not one this codebase writes.
-//
-//WHY THE RUN LOG NEEDS THIS. Attio RETURNS a select as `{ option: { id, title } }` but ACCEPTS it as
-//`{ option: "<id>" }`, and the transcript renders both: the "before" picture comes from a read and the "after"
-//from what was written. Without a way back from the ID, a transcript line read
-//`lead source discrete: Cold Email -> {"option":"4dca8bb3-..."}` - the same fact twice, once as a word and
-//once as a blob. See optionTitle (lib/run-log.ts).
-//USES: SCHEMAS, SOURCE_TITLES, PARTY_TITLES (this module). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function attributionOptionTitle(optionId: string): string | null {
-  for (const schema of Object.values(SCHEMAS)) {
-    for (const [category, id] of Object.entries(schema.source)) {
-      if (id === optionId) return SOURCE_TITLES[category as SourceCategory];
-    }
-    for (const [party, id] of Object.entries(schema.subSource)) {
-      if (id === optionId) return PARTY_TITLES[party as SubSourceParty];
-    }
-  }
-  return null;
-}
-
-export interface AttributionOptionCheck {
-  readonly object: AttributedObject;
-  readonly slug: string;
-  readonly optionIds: readonly string[];
-}
-
-/** [LOGIC] Every option ID this codebase writes, with the object and attribute it belongs to. Pure. */
-export function attributionOptionIds(): readonly AttributionOptionCheck[] {
-  return (Object.keys(SCHEMAS) as AttributedObject[]).flatMap((object) => {
-    const schema = SCHEMAS[object];
-    return [
-      { object, slug: schema.sourceSlug, optionIds: Object.values(schema.source) },
-      { object, slug: schema.subSourceSlug, optionIds: Object.values(schema.subSource) },
-    ];
-  });
-}
-
-/** Derived from SOURCES, so appending an entry there is what adds a provider - there is no second list. */
-export type Provider = keyof typeof SOURCES;
-
 export const PROVIDERS: readonly Provider[] = Object.keys(SOURCES) as Provider[];
-
-/** [LOGIC] USES: SOURCES (this module). Pure. */
-export function providerDisplayName(provider: Provider): string {
-  return SOURCES[provider].displayName;
-}
-
-/**
- * [LOGIC] The bare channel name - "<Name> Cold Outreach". One derivation for every provider, so a fourth
- * inherits the convention rather than adding a fourth hand-written string that could disagree with the other
- * three. This is the note TITLE, and nothing writes it to an attribute. It is also what the repeat check keys
- * on - see recentlyNoted (lib/interested.ts) - so changing it changes which notes count as duplicates of each
- * other, and a run under the old spelling will not recognise a note written under the new one.
- * USES: providerDisplayName (this module). Pure.
- */
-export function leadSourceLabel(provider: Provider): string {
-  return `${providerDisplayName(provider)} Cold Outreach`;
-}
-
-//#endregion
-
-//#region suppression
-/** Everything any suppression channel might need to identify a lead on its own platform. */
-export interface SuppressionTargets {
-  readonly personId: string;
-  readonly personName: string;
-  readonly email: string | null;
-  /** A LinkedIn profile URL, whichever provider happened to supply it. */
-  readonly profileUrl: string | null;
-}
-
-export type SuppressionChannelResult =
-  //`detail` is folded into the summary log line - a count, an identifier, whatever the platform reports back.
-  | { readonly status: "suppressed"; readonly detail?: string }
-  //Not a failure: the lead simply is not present on this platform to suppress, usually for want of the one
-  //identifier it works by. `reason` says which.
-  | { readonly status: "skipped"; readonly reason: string };
-
-export interface SuppressionChannel {
-  /** Named in logs and in the failure list a route returns, so keep it recognisable. */
-  readonly platform: string;
-  readonly suppress: (targets: SuppressionTargets) => Promise<SuppressionChannelResult>;
-}
 
 //---------------------------------------------------------------------------------------------------------
 //The outbound platforms silenced when any source reports interest. Order is priority: the channel most costly
@@ -315,4 +243,97 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
     },
   },
 ];
+
 //#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <name providers>
+
+//#region <display names and labels>
+/** [LOGIC] USES: SOURCES (this module). Pure. */
+export function providerDisplayName(provider: Provider): string {
+  return SOURCES[provider].displayName;
+}
+
+/**
+ * [LOGIC] The bare channel name - "<Name> Cold Outreach". One derivation for every provider, so a fourth
+ * inherits the convention rather than adding a fourth hand-written string that could disagree with the other
+ * three. This is the note TITLE, and nothing writes it to an attribute. It is also what the repeat check keys
+ * on - see recentlyNoted (lib/interested.ts) - so changing it changes which notes count as duplicates of each
+ * other, and a run under the old spelling will not recognise a note written under the new one.
+ * USES: providerDisplayName (this module). Pure.
+ */
+export function leadSourceLabel(provider: Provider): string {
+  return `${providerDisplayName(provider)} Cold Outreach`;
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <attribute leads to their source>
+
+//#region <values to write>
+//---------------------------------------------------------------------------------------------------------
+//The attribution attributes for one provider on one object, ready to merge into that object's values.
+//Returns the slugs and values together so a caller cannot pair one object's slug with another's ID: the only
+//way to get an ID out of here is to ask for the object it belongs to.
+//USES: PROVIDER_ATTRIBUTION, SCHEMAS (this module). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function attributionValues(
+  object: AttributedObject,
+  provider: Provider,
+): Readonly<Record<string, readonly { readonly option: string }[]>> {
+  const { category, party } = PROVIDER_ATTRIBUTION[provider];
+  const schema = SCHEMAS[object];
+  return {
+    [schema.sourceSlug]: [{ option: schema.source[category] }],
+    [schema.subSourceSlug]: [{ option: schema.subSource[party] }],
+  };
+}
+
+/** [LOGIC] Every attribution slug, so ALWAYS_OVERWRITE can name them without repeating the strings. Pure. */
+export function attributionSlugs(): readonly string[] {
+  return Object.values(SCHEMAS).flatMap((schema) => [schema.sourceSlug, schema.subSourceSlug]);
+}
+//#endregion
+
+//#region <option id lookups>
+//---------------------------------------------------------------------------------------------------------
+//The word an option ID stands for, or null if it is not one this codebase writes.
+//
+//WHY THE RUN LOG NEEDS THIS. Attio RETURNS a select as `{ option: { id, title } }` but ACCEPTS it as
+//`{ option: "<id>" }`, and the transcript renders both: the "before" picture comes from a read and the "after"
+//from what was written. Without a way back from the ID, a transcript line read
+//`lead source discrete: Cold Email -> {"option":"4dca8bb3-..."}` - the same fact twice, once as a word and
+//once as a blob. See optionTitle (lib/run-log.ts).
+//USES: SCHEMAS, SOURCE_TITLES, PARTY_TITLES (this module). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function attributionOptionTitle(optionId: string): string | null {
+  for (const schema of Object.values(SCHEMAS)) {
+    for (const [category, id] of Object.entries(schema.source)) {
+      if (id === optionId) return SOURCE_TITLES[category as SourceCategory];
+    }
+    for (const [party, id] of Object.entries(schema.subSource)) {
+      if (id === optionId) return PARTY_TITLES[party as SubSourceParty];
+    }
+  }
+  return null;
+}
+
+/** [LOGIC] Every option ID this codebase writes, with the object and attribute it belongs to. Pure. */
+export function attributionOptionIds(): readonly AttributionOptionCheck[] {
+  return (Object.keys(SCHEMAS) as AttributedObject[]).flatMap((object) => {
+    const schema = SCHEMAS[object];
+    return [
+      { object, slug: schema.sourceSlug, optionIds: Object.values(schema.source) },
+      { object, slug: schema.subSourceSlug, optionIds: Object.values(schema.subSource) },
+    ];
+  });
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

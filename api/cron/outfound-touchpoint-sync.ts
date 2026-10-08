@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import {
   beforeAnyWrite,
   companyCounterSlug,
@@ -34,6 +37,12 @@ import {
 import { budgetSeconds, startRunBudget, type RunBudget } from "../../lib/run-budget.js";
 import { cursorState, runOutcome } from "../../lib/run-summary.js";
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
+
 const SYNC_KEY = "outfound-touchpoints";
 
 type ProcessingOutcome = "processed" | "skipped" | "not_tam";
@@ -57,142 +66,11 @@ export interface OutfoundExpansion {
   readonly stoppedBy: "budget" | "throttled" | null;
 }
 
-/** Keyed on sent_at, which is also what the thread filter bounds on, so window and cursor agree. */
-export function outfoundCursorEvent(email: OutfoundEmail): CursorEvent {
-  return { id: email.id, timestampMs: Date.parse(email.sentAt) };
-}
+//#endregion
+//=============================================================================================================
 
-/**
- * [LOGIC] Traffic that actually happened. Scheduled and PendingSend have not been sent yet, Failed never was,
- * and `unknown` is a type this codebase does not recognise and will not count as a human touchpoint.
- * USES: nothing. Pure.
- */
-export function isOutfoundTouchpoint(email: OutfoundEmail): boolean {
-  return email.emailType === "Sent" || email.emailType === "Received";
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Expands threads into one chronological email stream.
-//FLOW: 1. per thread, fetch its messages. 2. keep only real sent/received traffic. 3. pair each with its cursor
-//event. 4. sort the lot by time.
-//[PERF] ONE REQUEST PER THREAD. The inbox listing carries no message bodies, so this is the second half of
-//every read and the dominant cost of the sync. A thread is listed when ANY of its emails falls in the window
-//and then yields its WHOLE history, so most of what comes back is older than the mark; the per-email cursor
-//check in the handler is what discards it, exactly as on the HeyReach sync.
-//[STABILITY] THE EXPANSION IS BUDGETED, which no other sync needs. Everywhere else the provider fetch is a
-//bounded number of pages and the budget only has to guard the write loop. Here the fetch is one request PER
-//THREAD, so a wide window - a first run, or a backfilled cursor - can spend the whole of maxDuration in this
-//function alone. Vercel would then kill the run before saveSyncCursor, the next run would redo the same window,
-//and the sync would never make progress: exactly the permanent loop lib/run-budget.ts exists to prevent.
-//Stopping here is safe because the cursor has not moved - but ONLY if the caller then refuses to park it. See
-//OutfoundExpansion.truncated.
-//[STABILITY] A thread whose messages cannot be read is logged and passed over rather than failing the run. One
-//unreadable thread must not cost the whole window, and the cursor never advanced past it, so it is retried next
-//run - unlike a failed EMAIL, which is passed over permanently once its writes may have landed.
-//USES: fetchOutfoundThreadEmails (lib/outfound.ts); errorMessage (lib/json.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function outfoundTouchpointEvents(
-  threads: readonly OutfoundThread[],
-  budget: RunBudget,
-  onThreadFailure: (threadHash: string, message: string) => void,
-): Promise<OutfoundExpansion> {
-  const events: OutfoundTouchpointEvent[] = [];
-  let threadsExpanded = 0;
-  for (const thread of threads) {
-    //Checked before the thread rather than after, so what remains is enough for a whole one.
-    if (budget.expired()) {
-      console.warn(
-        `[run] outfound sync: stopped expanding at ${threadsExpanded} of ${threads.length} thread(s) - the rest are left for the next run, and the cursor is not parked.`,
-      );
-      return { events: sortByTime(events), threadsExpanded, stoppedBy: "budget" };
-    }
-    threadsExpanded += 1;
-    let emails: readonly OutfoundEmail[];
-    try {
-      emails = await fetchOutfoundThreadEmails(thread.threadHash);
-    } catch (error) {
-      //[STABILITY] Throttling stops the expansion instead of passing the thread over. Every remaining thread
-      //would be throttled too, so carrying on would march through the whole backlog collecting one failure per
-      //thread and finish no work at all. Nothing was written and the cursor has not moved, so the threads left
-      //behind are simply read next run. This mirrors the Aircall sync's ThrottledBeforeWrite stop.
-      if (error instanceof OutfoundRateLimitError) {
-        console.warn(
-          `[run] outfound sync: throttled at ${threadsExpanded} of ${threads.length} thread(s) - ${error.message}. The run stops here rather than spending the rest of the window on requests that will also be refused; nothing is lost and the cursor is not parked.`,
-        );
-        return { events: sortByTime(events), threadsExpanded: threadsExpanded - 1, stoppedBy: "throttled" };
-      }
-      const message = errorMessage(error);
-      console.error(
-        `[event] outfound thread ${thread.threadHash}: FAILED to read and passed over - ${message}. The cursor never moved past it, so it is attempted again next run.`,
-      );
-      onThreadFailure(thread.threadHash, message);
-      continue;
-    }
-    for (const email of emails) {
-      if (!isOutfoundTouchpoint(email)) continue;
-      events.push({ thread, email, cursor: outfoundCursorEvent(email) });
-    }
-  }
-  return { events: sortByTime(events), threadsExpanded, stoppedBy: null };
-}
-
-function sortByTime(events: readonly OutfoundTouchpointEvent[]): readonly OutfoundTouchpointEvent[] {
-  return [...events].sort((left, right) => left.cursor.timestampMs - right.cursor.timestampMs);
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Records one email as a touchpoint on the Person and, when linked, the Company.
-//FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
-//counter on the Person. 5. note plus counter on the Company when one is linked.
-//The address comes from the THREAD rather than the email, because an email's own sender and recipient are
-//whichever way round that message went; the thread names the prospect once, for both directions.
-//USES: findPersonByEmail, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
-//companyCounterSlug (lib/attio.ts).
-//---------------------------------------------------------------------------------------------------------
-export async function processOutfoundTouchpoint(
-  event: OutfoundTouchpointEvent,
-): Promise<ProcessingOutcome> {
-  const leadEmail = event.thread.leadEmail;
-  if (!leadEmail) {
-    console.log(`[event] outfound email ${event.email.id}: skipped - no lead email on the thread`);
-    return "skipped";
-  }
-  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
-  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
-  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
-  const person = await beforeAnyWrite(() => findPersonByEmail(leadEmail));
-  if (!person) {
-    console.log(`[event] outfound email ${event.email.id}: skipped - no Attio person has ${leadEmail}`);
-    return "skipped";
-  }
-  const personId = person.id.record_id;
-  const personName = personLabel(person);
-  //Master TAM is the gate on counting anything: off-list people are read but never written to.
-  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
-    console.log(
-      `[event] outfound email ${event.email.id}: skipped - person ${personName} is not on the Master TAM list`,
-    );
-    return "not_tam";
-  }
-
-  const subject = event.email.subject ?? "(no subject)";
-  const body = event.email.bodyText ?? "(no content)";
-  const title = `${subject} — ${event.email.sentAt}`;
-  await createNote("people", personId, title, body, personName);
-  await incrementCounter("people", personId, personCounterSlug("outfound"), personName);
-
-  const companyId = personCompanyId(person);
-  if (companyId) {
-    await createNote(
-      "companies",
-      companyId,
-      title,
-      `Outfound email with ${personDisplayName(person) ?? leadEmail}:\n\n${body}`,
-    );
-    await incrementCounter("companies", companyId, companyCounterSlug("outfound"));
-  }
-  return "processed";
-}
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Vercel Cron entry point, every five minutes.
@@ -350,3 +228,161 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 }
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <build email stream>
+
+//#region <expand threads>
+//---------------------------------------------------------------------------------------------------------
+//Expands threads into one chronological email stream.
+//FLOW: 1. per thread, fetch its messages. 2. keep only real sent/received traffic. 3. pair each with its cursor
+//event. 4. sort the lot by time.
+//[PERF] ONE REQUEST PER THREAD. The inbox listing carries no message bodies, so this is the second half of
+//every read and the dominant cost of the sync. A thread is listed when ANY of its emails falls in the window
+//and then yields its WHOLE history, so most of what comes back is older than the mark; the per-email cursor
+//check in the handler is what discards it, exactly as on the HeyReach sync.
+//[STABILITY] THE EXPANSION IS BUDGETED, which no other sync needs. Everywhere else the provider fetch is a
+//bounded number of pages and the budget only has to guard the write loop. Here the fetch is one request PER
+//THREAD, so a wide window - a first run, or a backfilled cursor - can spend the whole of maxDuration in this
+//function alone. Vercel would then kill the run before saveSyncCursor, the next run would redo the same window,
+//and the sync would never make progress: exactly the permanent loop lib/run-budget.ts exists to prevent.
+//Stopping here is safe because the cursor has not moved - but ONLY if the caller then refuses to park it. See
+//OutfoundExpansion.truncated.
+//[STABILITY] A thread whose messages cannot be read is logged and passed over rather than failing the run. One
+//unreadable thread must not cost the whole window, and the cursor never advanced past it, so it is retried next
+//run - unlike a failed EMAIL, which is passed over permanently once its writes may have landed.
+//USES: fetchOutfoundThreadEmails (lib/outfound.ts); errorMessage (lib/json.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function outfoundTouchpointEvents(
+  threads: readonly OutfoundThread[],
+  budget: RunBudget,
+  onThreadFailure: (threadHash: string, message: string) => void,
+): Promise<OutfoundExpansion> {
+  const events: OutfoundTouchpointEvent[] = [];
+  let threadsExpanded = 0;
+  for (const thread of threads) {
+    //Checked before the thread rather than after, so what remains is enough for a whole one.
+    if (budget.expired()) {
+      console.warn(
+        `[run] outfound sync: stopped expanding at ${threadsExpanded} of ${threads.length} thread(s) - the rest are left for the next run, and the cursor is not parked.`,
+      );
+      return { events: sortByTime(events), threadsExpanded, stoppedBy: "budget" };
+    }
+    threadsExpanded += 1;
+    let emails: readonly OutfoundEmail[];
+    try {
+      emails = await fetchOutfoundThreadEmails(thread.threadHash);
+    } catch (error) {
+      //[STABILITY] Throttling stops the expansion instead of passing the thread over. Every remaining thread
+      //would be throttled too, so carrying on would march through the whole backlog collecting one failure per
+      //thread and finish no work at all. Nothing was written and the cursor has not moved, so the threads left
+      //behind are simply read next run. This mirrors the Aircall sync's ThrottledBeforeWrite stop.
+      if (error instanceof OutfoundRateLimitError) {
+        console.warn(
+          `[run] outfound sync: throttled at ${threadsExpanded} of ${threads.length} thread(s) - ${error.message}. The run stops here rather than spending the rest of the window on requests that will also be refused; nothing is lost and the cursor is not parked.`,
+        );
+        return { events: sortByTime(events), threadsExpanded: threadsExpanded - 1, stoppedBy: "throttled" };
+      }
+      const message = errorMessage(error);
+      console.error(
+        `[event] outfound thread ${thread.threadHash}: FAILED to read and passed over - ${message}. The cursor never moved past it, so it is attempted again next run.`,
+      );
+      onThreadFailure(thread.threadHash, message);
+      continue;
+    }
+    for (const email of emails) {
+      if (!isOutfoundTouchpoint(email)) continue;
+      events.push({ thread, email, cursor: outfoundCursorEvent(email) });
+    }
+  }
+  return { events: sortByTime(events), threadsExpanded, stoppedBy: null };
+}
+
+function sortByTime(events: readonly OutfoundTouchpointEvent[]): readonly OutfoundTouchpointEvent[] {
+  return [...events].sort((left, right) => left.cursor.timestampMs - right.cursor.timestampMs);
+}
+//#endregion
+
+//#region <filter and order emails>
+/** Keyed on sent_at, which is also what the thread filter bounds on, so window and cursor agree. */
+export function outfoundCursorEvent(email: OutfoundEmail): CursorEvent {
+  return { id: email.id, timestampMs: Date.parse(email.sentAt) };
+}
+
+/**
+ * [LOGIC] Traffic that actually happened. Scheduled and PendingSend have not been sent yet, Failed never was,
+ * and `unknown` is a type this codebase does not recognise and will not count as a human touchpoint.
+ * USES: nothing. Pure.
+ */
+export function isOutfoundTouchpoint(email: OutfoundEmail): boolean {
+  return email.emailType === "Sent" || email.emailType === "Received";
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <record email touchpoints>
+
+//#region <write to attio>
+//---------------------------------------------------------------------------------------------------------
+//Records one email as a touchpoint on the Person and, when linked, the Company.
+//FLOW: 1. require a lead address. 2. match a Person on it. 3. require Master TAM membership. 4. note plus
+//counter on the Person. 5. note plus counter on the Company when one is linked.
+//The address comes from the THREAD rather than the email, because an email's own sender and recipient are
+//whichever way round that message went; the thread names the prospect once, for both directions.
+//USES: findPersonByEmail, isPersonInList, createNote, incrementCounter, personCompanyId, personCounterSlug,
+//companyCounterSlug (lib/attio.ts).
+//---------------------------------------------------------------------------------------------------------
+export async function processOutfoundTouchpoint(
+  event: OutfoundTouchpointEvent,
+): Promise<ProcessingOutcome> {
+  const leadEmail = event.thread.leadEmail;
+  if (!leadEmail) {
+    console.log(`[event] outfound email ${event.email.id}: skipped - no lead email on the thread`);
+    return "skipped";
+  }
+  //[STABILITY] The filtered lookup, and the list read after it, are the whole pre-write region - see
+  //beforeAnyWrite (lib/attio.ts). incrementCounter below opens with a read too, but its PATCH is inside the
+  //same call, so a failure there cannot be told apart from a failure after it and stays on the pass-over path.
+  const person = await beforeAnyWrite(() => findPersonByEmail(leadEmail));
+  if (!person) {
+    console.log(`[event] outfound email ${event.email.id}: skipped - no Attio person has ${leadEmail}`);
+    return "skipped";
+  }
+  const personId = person.id.record_id;
+  const personName = personLabel(person);
+  //Master TAM is the gate on counting anything: off-list people are read but never written to.
+  if (!(await beforeAnyWrite(() => isPersonInList(personId, LISTS.MASTER_TAM, personName)))) {
+    console.log(
+      `[event] outfound email ${event.email.id}: skipped - person ${personName} is not on the Master TAM list`,
+    );
+    return "not_tam";
+  }
+
+  const subject = event.email.subject ?? "(no subject)";
+  const body = event.email.bodyText ?? "(no content)";
+  const title = `${subject} — ${event.email.sentAt}`;
+  await createNote("people", personId, title, body, personName);
+  await incrementCounter("people", personId, personCounterSlug("outfound"), personName);
+
+  const companyId = personCompanyId(person);
+  if (companyId) {
+    await createNote(
+      "companies",
+      companyId,
+      title,
+      `Outfound email with ${personDisplayName(person) ?? leadEmail}:\n\n${body}`,
+    );
+    await incrementCounter("companies", companyId, companyCounterSlug("outfound"));
+  }
+  return "processed";
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================

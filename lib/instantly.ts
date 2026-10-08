@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { credentialHint, INSTANTLY_BASE, instantlyAuthHeader } from "./endpoints.js";
 import {
   arrayValue,
@@ -9,7 +12,57 @@ import {
   type JsonObject,
 } from "./json.js";
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
+
 export type InstantlyEmailType = "received" | "sent" | "scheduled" | "unknown";
+
+export interface InstantlyEmail {
+  readonly id: string;
+  readonly timestampCreated: string;
+  readonly timestampEmail: string;
+  readonly emailType: InstantlyEmailType;
+  readonly leadEmail: string | null;
+  readonly isAutoReply: boolean;
+  readonly subject: string | null;
+  readonly bodyText: string | null;
+  readonly threadId: string | null;
+}
+
+export interface InstantlyEmailQuery {
+  readonly fromMs?: number;
+  readonly toMs?: number;
+  readonly leadEmail?: string;
+}
+
+/** Why pagination stopped short of the end of the window, if it did. null means it was read to the end. */
+export type InstantlyPageStop = "throttled" | "page-limit";
+
+export interface InstantlyEmailWindow {
+  readonly emails: readonly InstantlyEmail[];
+  readonly stoppedBy: InstantlyPageStop | null;
+  readonly pagesRead: number;
+}
+
+export interface InstantlyLead {
+  readonly email: string;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly jobTitle: string | null;
+  readonly phone: string | null;
+  readonly companyName: string | null;
+  readonly companyDomain: string | null;
+  readonly website: string | null;
+  readonly linkedin: string | null;
+  readonly location: string | null;
+  readonly companyAddress: string | null;
+  readonly industry: string | null;
+  readonly employeeCount: string | null;
+  readonly annualRevenue: string | null;
+}
 
 //---------------------------------------------------------------------------------------------------------
 //Raised on a 429, so a caller can tell "slow down" apart from "this request was wrong". Mirrors
@@ -30,72 +83,6 @@ export class InstantlyRateLimitError extends Error {
   }
 }
 
-//---------------------------------------------------------------------------------------------------------
-//Single transport for every Instantly call. Nothing else in this module calls fetch.
-//FLOW: 1. prefix with INSTANTLY_BASE. 2. attach the bearer under any caller override. 3. parse the body.
-//4. 429 -> InstantlyRateLimitError. 5. other non-2xx -> throw, with credentialHint naming INSTANTLY_API_KEY
-//on a 401/403.
-//[SECURITY] The key is read from env per request by instantlyAuthHeader and never cached in module state.
-//[STABILITY] A 429 is NOT retried in here, unlike attioFetch. Attio's limit is per second and a short backoff
-//clears it; Instantly's is 20 per MINUTE, so waiting it out would spend most of a run's budget sleeping. The
-//caller stops and resumes next run instead, which costs nothing and drains the same backlog faster.
-//---------------------------------------------------------------------------------------------------------
-async function instantlyFetch(path: string, options: RequestInit = {}): Promise<unknown> {
-  const response = await fetch(`${INSTANTLY_BASE}${path}`, {
-    ...options,
-    headers: {
-      Authorization: instantlyAuthHeader(),
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-  const body = await responseJson(response);
-  if (response.status === 429) {
-    const retryAfter = response.headers.get("retry-after");
-    throw new InstantlyRateLimitError(
-      `${path.split("?")[0]}${retryAfter ? `, retry after ${retryAfter}s` : ""}. The documented allowance is 20 requests per minute across the whole key, which the touchpoint sync's pagination and the interested route's lookups share.`,
-    );
-  }
-  if (!response.ok) {
-    throw new Error(
-      `Instantly API error ${response.status}: ${JSON.stringify(body)}${credentialHint("instantly", response.status)}`,
-    );
-  }
-  return body;
-}
-
-//Interfaces=======================================================================================
-
-export interface InstantlyEmail {
-  readonly id: string;
-  readonly timestampCreated: string;
-  readonly timestampEmail: string;
-  readonly emailType: InstantlyEmailType;
-  readonly leadEmail: string | null;
-  readonly isAutoReply: boolean;
-  readonly subject: string | null;
-  readonly bodyText: string | null;
-  readonly threadId: string | null;
-}
-
-//=================================================================================================
-
-function parseEmailType(value: unknown): InstantlyEmailType {
-  if (value === 1 || value === 3) return "sent";
-  if (value === 2) return "received";
-  if (value === 4) return "scheduled";
-  return "unknown";
-}
-
-//=============================================================================================================
-//Email bodies, as prose.
-//
-//[LOGIC] Instantly sends no plain-text body for the mail it sends itself. A campaign email arrives as
-//`body: { html }` with no `text` key at all, and only an inbound reply - carrying whatever the sender's own
-//client produced - has both. Reading `text` alone therefore left every outbound touchpoint note reading
-//"(no content)", which is most of them. The markup is unwrapped here instead.
-//=============================================================================================================
-
 //Tags whose close ends a line of prose. Everything else (<span>, <a>, <b>) is inline and leaves no break.
 const BLOCK_CLOSE = /<\/(?:p|div|tr|li|h[1-6]|table|blockquote|ul|ol|section|article|header|footer|pre)\s*>/gi;
 const LINE_BREAK = /<(?:br|hr)\b[^>]*>/gi;
@@ -112,6 +99,77 @@ const NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
 };
 
+//---------------------------------------------------------------------------------------------------------
+//Pages the sync stops itself at, short of the 20-per-minute ceiling.
+//
+//WHY A CAP AND NOT JUST THE 429. Bursting until Instantly refuses would make a rejected request part of normal
+//operation on every run with a backlog, which is both rude to the API and indistinguishable in the log from
+//the real problem. Fifteen pages is 1,500 emails, and leaves five requests of headroom for the interested
+//route - which shares this key's allowance and fires on a lead's schedule, not ours.
+//
+//[PERF] The cap is not the binding constraint on throughput and is not meant to be. One touchpoint is several
+//Attio writes, so INSTANTLY_SYNC_BUDGET_MS runs out long before 1,500 emails are processed; the run stops on
+//budget, parks its cursor, and the next run picks up from there. The cap only bounds what is FETCHED, so a
+//deep backlog cannot spend the whole run on pages it will never reach.
+//---------------------------------------------------------------------------------------------------------
+export const INSTANTLY_SYNC_PAGE_LIMIT = 15;
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <parse instantly responses>
+
+//#region <emails>
+function parseEmailType(value: unknown): InstantlyEmailType {
+  if (value === 1 || value === 3) return "sent";
+  if (value === 2) return "received";
+  if (value === 4) return "scheduled";
+  return "unknown";
+}
+
+export function parseInstantlyEmail(value: unknown): InstantlyEmail {
+  if (!isJsonObject(value)) throw new Error("Instantly returned an invalid email");
+  const id = stringValue(value.id);
+  const timestampCreated = stringValue(value.timestamp_created);
+  const timestampEmail = stringValue(value.timestamp_email) ?? timestampCreated;
+  const leadEmail = stringValue(value.lead);
+  if (!id || !timestampCreated || !timestampEmail) {
+    throw new Error("Instantly email is missing id or timestamp");
+  }
+  if (!Number.isFinite(Date.parse(timestampCreated)) || !Number.isFinite(Date.parse(timestampEmail))) {
+    throw new Error("Instantly email has an invalid timestamp");
+  }
+  const body = objectValue(value, "body");
+  return {
+    id,
+    timestampCreated,
+    timestampEmail,
+    emailType: parseEmailType(value.ue_type),
+    leadEmail,
+    isAutoReply: value.is_auto_reply === 1,
+    subject: stringValue(value.subject),
+    //Falls back to the HTML body, which is all Instantly sends for its own outbound mail. See htmlToPlainText.
+    bodyText: stringValue(body?.text) ?? htmlToPlainText(stringValue(body?.html)),
+    threadId: stringValue(value.thread_id),
+  };
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <convert email html to text>
+
+//Email bodies, as prose.
+//
+//[LOGIC] Instantly sends no plain-text body for the mail it sends itself. A campaign email arrives as
+//`body: { html }` with no `text` key at all, and only an inbound reply - carrying whatever the sender's own
+//client produced - has both. Reading `text` alone therefore left every outbound touchpoint note reading
+//"(no content)", which is most of them. The markup is unwrapped here instead.
+
+//#region <html bodies>
 /** The named and numeric entities an email body actually uses. Anything unrecognised is left exactly as it was. */
 function decodeEntities(html: string): string {
   return html.replace(
@@ -155,64 +213,57 @@ export function htmlToPlainText(html: string | null): string | null {
     .trim();
   return text.length > 0 ? text : null;
 }
+//#endregion
 
-export function parseInstantlyEmail(value: unknown): InstantlyEmail {
-  if (!isJsonObject(value)) throw new Error("Instantly returned an invalid email");
-  const id = stringValue(value.id);
-  const timestampCreated = stringValue(value.timestamp_created);
-  const timestampEmail = stringValue(value.timestamp_email) ?? timestampCreated;
-  const leadEmail = stringValue(value.lead);
-  if (!id || !timestampCreated || !timestampEmail) {
-    throw new Error("Instantly email is missing id or timestamp");
-  }
-  if (!Number.isFinite(Date.parse(timestampCreated)) || !Number.isFinite(Date.parse(timestampEmail))) {
-    throw new Error("Instantly email has an invalid timestamp");
-  }
-  const body = objectValue(value, "body");
-  return {
-    id,
-    timestampCreated,
-    timestampEmail,
-    emailType: parseEmailType(value.ue_type),
-    leadEmail,
-    isAutoReply: value.is_auto_reply === 1,
-    subject: stringValue(value.subject),
-    //Falls back to the HTML body, which is all Instantly sends for its own outbound mail. See htmlToPlainText.
-    bodyText: stringValue(body?.text) ?? htmlToPlainText(stringValue(body?.html)),
-    threadId: stringValue(value.thread_id),
-  };
-}
+//#endregion
+//=============================================================================================================
 
-export interface InstantlyEmailQuery {
-  readonly fromMs?: number;
-  readonly toMs?: number;
-  readonly leadEmail?: string;
-}
+//=============================================================================================================
+//#region <instantly transport>
 
-/** Why pagination stopped short of the end of the window, if it did. null means it was read to the end. */
-export type InstantlyPageStop = "throttled" | "page-limit";
-
-export interface InstantlyEmailWindow {
-  readonly emails: readonly InstantlyEmail[];
-  readonly stoppedBy: InstantlyPageStop | null;
-  readonly pagesRead: number;
-}
-
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
-//Pages the sync stops itself at, short of the 20-per-minute ceiling.
-//
-//WHY A CAP AND NOT JUST THE 429. Bursting until Instantly refuses would make a rejected request part of normal
-//operation on every run with a backlog, which is both rude to the API and indistinguishable in the log from
-//the real problem. Fifteen pages is 1,500 emails, and leaves five requests of headroom for the interested
-//route - which shares this key's allowance and fires on a lead's schedule, not ours.
-//
-//[PERF] The cap is not the binding constraint on throughput and is not meant to be. One touchpoint is several
-//Attio writes, so INSTANTLY_SYNC_BUDGET_MS runs out long before 1,500 emails are processed; the run stops on
-//budget, parks its cursor, and the next run picks up from there. The cap only bounds what is FETCHED, so a
-//deep backlog cannot spend the whole run on pages it will never reach.
+//Single transport for every Instantly call. Nothing else in this module calls fetch.
+//FLOW: 1. prefix with INSTANTLY_BASE. 2. attach the bearer under any caller override. 3. parse the body.
+//4. 429 -> InstantlyRateLimitError. 5. other non-2xx -> throw, with credentialHint naming INSTANTLY_API_KEY
+//on a 401/403.
+//[SECURITY] The key is read from env per request by instantlyAuthHeader and never cached in module state.
+//[STABILITY] A 429 is NOT retried in here, unlike attioFetch. Attio's limit is per second and a short backoff
+//clears it; Instantly's is 20 per MINUTE, so waiting it out would spend most of a run's budget sleeping. The
+//caller stops and resumes next run instead, which costs nothing and drains the same backlog faster.
 //---------------------------------------------------------------------------------------------------------
-export const INSTANTLY_SYNC_PAGE_LIMIT = 15;
+async function instantlyFetch(path: string, options: RequestInit = {}): Promise<unknown> {
+  const response = await fetch(`${INSTANTLY_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: instantlyAuthHeader(),
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+  const body = await responseJson(response);
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    throw new InstantlyRateLimitError(
+      `${path.split("?")[0]}${retryAfter ? `, retry after ${retryAfter}s` : ""}. The documented allowance is 20 requests per minute across the whole key, which the touchpoint sync's pagination and the interested route's lookups share.`,
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Instantly API error ${response.status}: ${JSON.stringify(body)}${credentialHint("instantly", response.status)}`,
+    );
+  }
+  return body;
+}
+//#endregion
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <read emails>
+
+//#region <email windows>
 //---------------------------------------------------------------------------------------------------------
 //Reads emails, paginated, up to `maxPages`.
 //FLOW: 1. build a page from whichever query fields are set. 2. GET. 3. parse items. 4. follow
@@ -289,32 +340,21 @@ export async function fetchInstantlyEmails(
   }
   return emails;
 }
+//#endregion
+
+//#endregion
+//=============================================================================================================
 
 //=============================================================================================================
+//#region <read and block leads>
+
 //The lead record, and the blocklist.
 //
 //The lead_interested webhook body is thin - an event type, an address, and sometimes a name. Everything worth
 //enriching Attio with (job title, LinkedIn URL, phone, industry, headcount, revenue, location, company address)
 //lives on the lead record instead, under the custom-variable payload, so the interested route reads it back.
-//=============================================================================================================
 
-export interface InstantlyLead {
-  readonly email: string;
-  readonly firstName: string | null;
-  readonly lastName: string | null;
-  readonly jobTitle: string | null;
-  readonly phone: string | null;
-  readonly companyName: string | null;
-  readonly companyDomain: string | null;
-  readonly website: string | null;
-  readonly linkedin: string | null;
-  readonly location: string | null;
-  readonly companyAddress: string | null;
-  readonly industry: string | null;
-  readonly employeeCount: string | null;
-  readonly annualRevenue: string | null;
-}
-
+//#region <parse lead records>
 //The payload is a workspace's own custom variables, so its keys are whatever whoever built the campaign typed:
 //"# Employees", "Annual Revenue", "Company Address", "linkedIn". Keys are therefore compared on their letters
 //and digits alone, which makes "# Employees" and "employees" one name and survives a variable being renamed to
@@ -361,7 +401,9 @@ export function parseInstantlyLead(value: unknown): InstantlyLead {
     annualRevenue: payloadValue(payload, ["Annual Revenue", "revenue", "annualRevenue"]),
   };
 }
+//#endregion
 
+//#region <look up a lead>
 //---------------------------------------------------------------------------------------------------------
 //The lead record behind an address, or null when Instantly holds none.
 //FLOW: 1. free-text search on the address. 2. keep only an EXACT case-insensitive match on `email`.
@@ -395,7 +437,9 @@ function describeInstantlyLead(lead: InstantlyLead): string {
     .map(([key]) => key);
   return present.length > 0 ? `carrying ${present.join(", ")}` : "carrying nothing beyond the address";
 }
+//#endregion
 
+//#region <blocklist>
 //---------------------------------------------------------------------------------------------------------
 //Adds an address to the workspace blocklist, so no campaign can mail it again.
 //Part of the suppression that runs for every interested lead whatever platform reported the interest - see
@@ -416,3 +460,7 @@ export async function blockInstantlyLead(value: string): Promise<void> {
     throw error;
   }
 }
+//#endregion
+
+//#endregion
+//=============================================================================================================

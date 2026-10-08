@@ -1,4 +1,13 @@
-//====================================================================================
+//What the three interested workflows have in common.
+//
+//Aircall, Instantly, and HeyReach reach Attio by three different routes - a poll and two webhooks of different
+//shapes - and each knows different things about a lead. What happens once the lead IS known is the same in all
+//three, and this module is that part: one normalised lead shape, one mapping onto Attio attributes, one write
+//path that cannot overwrite, one company resolution, one deal naming rule, and one suppression across every
+//outbound platform. The provider modules keep only what is genuinely theirs - parsing their own payload, and
+//rendering their own message history into a note.
+
+//=============================================================================================================
 //#region <import statements>
 
 import {
@@ -38,20 +47,11 @@ import {
 import { runLogApplied, runLogRecord, withRunLog } from "./run-log.js"; //the tool that writes down what this run did
 
 //#endregion
-//====================================================================================
-
-//=============================================================================================================
-//What the three interested workflows have in common.
-//
-//Aircall, Instantly, and HeyReach reach Attio by three different routes - a poll and two webhooks of different
-//shapes - and each knows different things about a lead. What happens once the lead IS known is the same in all
-//three, and this module is that part: one normalised lead shape, one mapping onto Attio attributes, one write
-//path that cannot overwrite, one company resolution, one deal naming rule, and one suppression across every
-//outbound platform. The provider modules keep only what is genuinely theirs - parsing their own payload, and
-//rendering their own message history into a note.
 //=============================================================================================================
 
-//#region <get raw data from the normalised lead>
+//=============================================================================================================
+//#region <types and globals>
+
 //---------------------------------------------------------------------------------------------------------
 //Every field any provider can supply about an interested lead. A provider that cannot supply one passes null,
 //and null never reaches Attio - see updateAttioAttributes.
@@ -88,6 +88,197 @@ export interface InterestedLead {
   readonly occurredAtMs: number | null;
 }
 
+/** Every key an Attio location value carries. Sent whole, because a partial location is rejected. */
+export interface AttioLocation {
+  readonly line_1: string | null;
+  readonly line_2: string | null;
+  readonly line_3: string | null;
+  readonly line_4: string | null;
+  readonly locality: string | null;
+  readonly region: string | null;
+  readonly postcode: string | null;
+  readonly country_code: string | null;
+  readonly latitude: string | null;
+  readonly longitude: string | null;
+}
+
+//---------------------------------------------------------------------------------------------------------
+//Reading a scalar back OUT of a value Attio returned. Needed only for the multiselect attributes below, where
+//a write has to include what is already there. Each attribute type spells its scalar differently.
+//---------------------------------------------------------------------------------------------------------
+type ScalarReader = (value: Record<string, unknown>) => string | null;
+
+export interface AttributeWriteResult {
+  /** The slugs Attio accepted. */
+  readonly written: readonly string[];
+  /** The slugs Attio rejected, which the event continued without. */
+  readonly dropped: readonly string[];
+}
+
+export interface ResolvedCompany {
+  readonly id: string;
+  /** The name Attio holds, which is what the deal is named after - not what the provider called it. */
+  readonly name: string | null;
+}
+
+export interface SuppressionOutcome {
+  readonly platform: string;
+  readonly status: "suppressed" | "skipped" | "failed";
+  readonly detail: string | null;
+}
+
+export interface SuppressionResult {
+  readonly outcomes: readonly SuppressionOutcome[];
+  /** One entry per platform that could not be suppressed. Empty means the lead is suppressed everywhere. */
+  readonly failures: readonly string[];
+}
+
+export interface InterestedWorkflow {
+  readonly lead: InterestedLead;
+  /**
+   * How this provider identifies the person in Attio, in its own order of confidence - HeyReach leads with a
+   * profile URL, Instantly and Aircall with an address. Returning null means no such person exists yet and one
+   * is created from the lead.
+   */
+  readonly findPerson: () => Promise<AttioPerson | null>;
+  /**
+   * This provider's own message history, already rendered for the note. A thunk rather than a string because
+   * fetching a thread costs a request, and it should not be paid until the lead is known to be recordable.
+   */
+  readonly history: () => Promise<string>;
+  /** What this event is called in the logs - "aircall call 4821", "heyreach-interested". */
+  readonly subject: string;
+}
+
+export interface InterestedOutcome {
+  readonly personId: string;
+  readonly personName: string;
+  readonly dealId: string;
+  readonly companyId: string | null;
+  readonly suppression: SuppressionResult;
+  /**
+   * True when this event repeated one already recorded and the workflow declined to write anything. The ids
+   * are the existing records' - see recentlyNoted. Routes report it so a suppressed repeat reads as a
+   * decision in the response, not as a silent success.
+   */
+  readonly duplicate: boolean;
+}
+
+//A magnitude suffix on a number: 4.3M is 4,300,000. Providers abbreviate revenue and headcount this way, and
+//reading "4.3M" as the digits 43 would be wrong by six orders of magnitude - silently, and permanently.
+const MAGNITUDES: Readonly<Record<string, number>> = { k: 1_000, m: 1_000_000, b: 1_000_000_000, t: 1_000_000_000_000 };
+
+//Hosts that are never a company's own domain. A provider that puts a LinkedIn or Facebook page where a website
+//belongs - which they do - would otherwise write "linkedin.com" into Attio's Domains attribute, and Domains is
+//UNIQUE: the first company to claim it takes the slot, and every company after that fails to match or to save.
+//One bad value here does lasting damage to records it never touched, so the list errs on the side of refusing.
+const NEVER_A_COMPANY_DOMAIN: ReadonlySet<string> = new Set([
+  "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com", "tiktok.com",
+  "crunchbase.com", "angel.co", "wellfound.com", "github.com", "medium.com", "substack.com",
+  "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com", "icloud.com", "aol.com",
+  "sites.google.com", "wixsite.com", "squarespace.com", "wordpress.com", "godaddysites.com",
+]);
+
+//A country name to its ISO 3166-1 alpha-2 code, because Attio's location attribute stores the code.
+//Deliberately short: it covers the countries this workspace's lead data actually contains, and an address whose
+//country is not listed simply gets no structured location. Extend it as new markets appear.
+const COUNTRY_CODES: Readonly<Record<string, string>> = {
+  "united states": "US",
+  "united states of america": "US",
+  usa: "US",
+  us: "US",
+  canada: "CA",
+  "united kingdom": "GB",
+  uk: "GB",
+  "great britain": "GB",
+  england: "GB",
+  scotland: "GB",
+  wales: "GB",
+  ireland: "IE",
+  australia: "AU",
+  "new zealand": "NZ",
+  germany: "DE",
+  france: "FR",
+  spain: "ES",
+  italy: "IT",
+  netherlands: "NL",
+  belgium: "BE",
+  switzerland: "CH",
+  austria: "AT",
+  sweden: "SE",
+  norway: "NO",
+  denmark: "DK",
+  finland: "FI",
+  poland: "PL",
+  portugal: "PT",
+  mexico: "MX",
+  brazil: "BR",
+  india: "IN",
+  singapore: "SG",
+  japan: "JP",
+  israel: "IL",
+  "south africa": "ZA",
+  "united arab emirates": "AE",
+};
+
+//The multiselect attributes these workflows write. A PATCH REPLACES an attribute rather than appending to it,
+//so for these the existing entries are read and sent back alongside the new one. Every other attribute is left
+//strictly alone once populated; these are the exception because a lead's second address or number is additive
+//information, and skipping the write outright is what silently dropped it before.
+const MULTISELECT_READERS: Readonly<Record<string, ScalarReader>> = {
+  email_addresses: (value) => stringValue(value.email_address) ?? stringValue(value.original_email_address),
+  phone_numbers: (value) => stringValue(value.original_phone_number) ?? stringValue(value.phone_number),
+  domains: (value) => stringValue(value.domain) ?? stringValue(value.root_domain),
+};
+
+//---------------------------------------------------------------------------------------------------------
+//The slugs that OVERWRITE rather than fill. The standing rule below is that Attio's own data always wins; this
+//set is the deliberate exception to it, so the exception is one named list rather than a special case buried in
+//the loop.
+//
+//WHY ATTRIBUTION IS ON IT. Every other attribute here is a fact about the person - a job title, a location -
+//that a human may have corrected in the CRM and that a provider has no standing to contradict. A source is not
+//a fact about the person; it is a statement about THIS run: the channel that just produced the interested
+//signal. Filling it only when blank meant a person first seen on one platform kept that platform's label
+//forever, and a later interested event on another channel was recorded everywhere except the field reporting
+//reads. The value the run carries is by definition the most recent truth, so it replaces what is there.
+//
+//It matters twice over on the Deal, because a deal is REUSED when the person already has one (see
+//ensureInterestedDeal): a lead first seen on Instantly and later replying on HeyReach keeps ONE deal, which
+//without this would still read Cold Email months after the LinkedIn reply. Latest touch wins was the explicit
+//call.
+//
+//COST: a record worked across channels no longer preserves the FIRST source, only the latest. The full history
+//is still recoverable - every interested event writes a note titled with its own leadSourceLabel, so the
+//sequence lives on the person's and the deal's notes even though the attributes hold only the newest.
+//
+//All four slugs come from attributionSlugs(), so they are declared once. Companies receive none of them.
+//---------------------------------------------------------------------------------------------------------
+const ALWAYS_OVERWRITE: ReadonlySet<string> = new Set(attributionSlugs());
+
+//The Attio DNC list, prepended to the third-party channels. It lives here rather than in the register because
+//it is the only channel that touches Attio, and keeping it here is what lets lib/providers.ts stay free of any
+//Attio import. It is also the channel that governs Aircall dialling, which has no API of its own to call.
+//[LOGIC] USES: addPersonToList, LISTS (lib/attio.ts).
+const ATTIO_DNC_CHANNEL: SuppressionChannel = {
+  platform: "attio DNC list",
+  suppress: async (targets) => {
+    await addPersonToList(targets.personId, LISTS.DNC, targets.personName);
+    return { status: "suppressed" };
+  },
+};
+
+//Long enough to cover a provider's retry and a fan-out across campaigns, short enough that a lead who replies
+//again days later still earns a fresh note. Overridable per deployment without a redeploy.
+export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000;
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <build the normalised lead>
+
+//#region <default every field>
 /**
  * [LOGIC] Defaults every field, so a provider's extractor names only what it actually has. Absent means null,
  * and null never reaches Attio - see updateAttioAttributes.
@@ -120,17 +311,19 @@ export function interestedLead(
 }
 //#endregion
 
-//#region <format attributes to attio structure>
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <format values for attio>
+
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] Provider values into the exact shape one Attio attribute type accepts.
 //Every one returns null rather than a best guess when the input does not fit. A blank attribute is
 //recoverable; a confidently wrong value is not, because nothing downstream will ever overwrite it.
 //---------------------------------------------------------------------------------------------------------
 
-//A magnitude suffix on a number: 4.3M is 4,300,000. Providers abbreviate revenue and headcount this way, and
-//reading "4.3M" as the digits 43 would be wrong by six orders of magnitude - silently, and permanently.
-const MAGNITUDES: Readonly<Record<string, number>> = { k: 1_000, m: 1_000_000, b: 1_000_000_000, t: 1_000_000_000_000 };
-
+//#region <counts and buckets>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] A count out of a number written any way a provider might write it.
 //FLOW: 1. drop currency symbols, spaces, and thousands separators. 2. a range ("50-100", "1K-5K") keeps its
@@ -183,18 +376,9 @@ export function toArrBucket(value: string | null): string | null {
   if (amount < 10_000_000_000) return "$1B-$10B";
   return "$10B+";
 }
+//#endregion
 
-//Hosts that are never a company's own domain. A provider that puts a LinkedIn or Facebook page where a website
-//belongs - which they do - would otherwise write "linkedin.com" into Attio's Domains attribute, and Domains is
-//UNIQUE: the first company to claim it takes the slot, and every company after that fails to match or to save.
-//One bad value here does lasting damage to records it never touched, so the list errs on the side of refusing.
-const NEVER_A_COMPANY_DOMAIN: ReadonlySet<string> = new Set([
-  "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com", "tiktok.com",
-  "crunchbase.com", "angel.co", "wellfound.com", "github.com", "medium.com", "substack.com",
-  "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com", "icloud.com", "aol.com",
-  "sites.google.com", "wixsite.com", "squarespace.com", "wordpress.com", "godaddysites.com",
-]);
-
+//#region <domains>
 //---------------------------------------------------------------------------------------------------------
 //[LOGIC] A hostname out of whatever a provider called a website, or null if it is not this company's own.
 //FLOW: 1. no input -> null. 2. parse as a URL so a path, port, or query cannot survive. 3. lowercase and drop
@@ -225,63 +409,9 @@ export function toDomain(value: string | null): string | null {
   }
   return domain;
 }
+//#endregion
 
-//A country name to its ISO 3166-1 alpha-2 code, because Attio's location attribute stores the code.
-//Deliberately short: it covers the countries this workspace's lead data actually contains, and an address whose
-//country is not listed simply gets no structured location. Extend it as new markets appear.
-const COUNTRY_CODES: Readonly<Record<string, string>> = {
-  "united states": "US",
-  "united states of america": "US",
-  usa: "US",
-  us: "US",
-  canada: "CA",
-  "united kingdom": "GB",
-  uk: "GB",
-  "great britain": "GB",
-  england: "GB",
-  scotland: "GB",
-  wales: "GB",
-  ireland: "IE",
-  australia: "AU",
-  "new zealand": "NZ",
-  germany: "DE",
-  france: "FR",
-  spain: "ES",
-  italy: "IT",
-  netherlands: "NL",
-  belgium: "BE",
-  switzerland: "CH",
-  austria: "AT",
-  sweden: "SE",
-  norway: "NO",
-  denmark: "DK",
-  finland: "FI",
-  poland: "PL",
-  portugal: "PT",
-  mexico: "MX",
-  brazil: "BR",
-  india: "IN",
-  singapore: "SG",
-  japan: "JP",
-  israel: "IL",
-  "south africa": "ZA",
-  "united arab emirates": "AE",
-};
-
-/** Every key an Attio location value carries. Sent whole, because a partial location is rejected. */
-export interface AttioLocation {
-  readonly line_1: string | null;
-  readonly line_2: string | null;
-  readonly line_3: string | null;
-  readonly line_4: string | null;
-  readonly locality: string | null;
-  readonly region: string | null;
-  readonly postcode: string | null;
-  readonly country_code: string | null;
-  readonly latitude: string | null;
-  readonly longitude: string | null;
-}
-
+//#region <postal addresses>
 //---------------------------------------------------------------------------------------------------------
 //A comma-separated postal address into Attio's structured location.
 //Providers send "<street>, <city>, <region>, <country>, <postcode>" - country second to last, postcode last -
@@ -329,7 +459,9 @@ export function parsePostalAddress(value: string | null): AttioLocation | null {
     longitude: null,
   };
 }
+//#endregion
 
+//#region <dates and times>
 /** An epoch-millisecond instant as an Attio timestamp, or null when the caller had no time to give. */
 export function toTimestamp(ms: number | null): string | null {
   if (ms === null || !Number.isFinite(ms)) return null;
@@ -343,48 +475,13 @@ export function toDate(ms: number | null): string | null {
 }
 //#endregion
 
-//#region the write path
-//---------------------------------------------------------------------------------------------------------
-//Reading a scalar back OUT of a value Attio returned. Needed only for the multiselect attributes below, where
-//a write has to include what is already there. Each attribute type spells its scalar differently.
-//---------------------------------------------------------------------------------------------------------
-type ScalarReader = (value: Record<string, unknown>) => string | null;
+//#endregion
+//=============================================================================================================
 
-//The multiselect attributes these workflows write. A PATCH REPLACES an attribute rather than appending to it,
-//so for these the existing entries are read and sent back alongside the new one. Every other attribute is left
-//strictly alone once populated; these are the exception because a lead's second address or number is additive
-//information, and skipping the write outright is what silently dropped it before.
-const MULTISELECT_READERS: Readonly<Record<string, ScalarReader>> = {
-  email_addresses: (value) => stringValue(value.email_address) ?? stringValue(value.original_email_address),
-  phone_numbers: (value) => stringValue(value.original_phone_number) ?? stringValue(value.phone_number),
-  domains: (value) => stringValue(value.domain) ?? stringValue(value.root_domain),
-};
+//=============================================================================================================
+//#region <write attributes to attio>
 
-//---------------------------------------------------------------------------------------------------------
-//The slugs that OVERWRITE rather than fill. The standing rule below is that Attio's own data always wins; this
-//set is the deliberate exception to it, so the exception is one named list rather than a special case buried in
-//the loop.
-//
-//WHY ATTRIBUTION IS ON IT. Every other attribute here is a fact about the person - a job title, a location -
-//that a human may have corrected in the CRM and that a provider has no standing to contradict. A source is not
-//a fact about the person; it is a statement about THIS run: the channel that just produced the interested
-//signal. Filling it only when blank meant a person first seen on one platform kept that platform's label
-//forever, and a later interested event on another channel was recorded everywhere except the field reporting
-//reads. The value the run carries is by definition the most recent truth, so it replaces what is there.
-//
-//It matters twice over on the Deal, because a deal is REUSED when the person already has one (see
-//ensureInterestedDeal): a lead first seen on Instantly and later replying on HeyReach keeps ONE deal, which
-//without this would still read Cold Email months after the LinkedIn reply. Latest touch wins was the explicit
-//call.
-//
-//COST: a record worked across channels no longer preserves the FIRST source, only the latest. The full history
-//is still recoverable - every interested event writes a note titled with its own leadSourceLabel, so the
-//sequence lives on the person's and the deal's notes even though the attributes hold only the newest.
-//
-//All four slugs come from attributionSlugs(), so they are declared once. Companies receive none of them.
-//---------------------------------------------------------------------------------------------------------
-const ALWAYS_OVERWRITE: ReadonlySet<string> = new Set(attributionSlugs());
-
+//#region <merge multiselects>
 /**
  * [LOGIC] The scalars an attribute currently holds, or null if ANY entry could not be read. All-or-nothing on
  * purpose: a partial read is what would silently delete the entries it failed to see - see mergeMultiselect.
@@ -439,7 +536,9 @@ function mergeMultiselect(
   if (additions.length === 0) return null;
   return [...existing, ...additions];
 }
+//#endregion
 
+//#region <drop empty values>
 /** [LOGIC] Nothing worth writing: absent, blank, or an empty list. Distinct from a value Attio already holds. */
 function isEmptyCandidate(value: unknown): boolean {
   if (value === undefined || value === null) return true;
@@ -459,14 +558,9 @@ function isEmptyCandidate(value: unknown): boolean {
 function withoutEmpty(values: Record<string, unknown>): AttioValues {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => !isEmptyCandidate(value)));
 }
+//#endregion
 
-export interface AttributeWriteResult {
-  /** The slugs Attio accepted. */
-  readonly written: readonly string[];
-  /** The slugs Attio rejected, which the event continued without. */
-  readonly dropped: readonly string[];
-}
-
+//#region <patch records>
 //---------------------------------------------------------------------------------------------------------
 //Writes the fillable attributes, salvaging as many as Attio will take.
 //FLOW: 1. one PATCH with all of them, which is the normal case and the only request usually made. 2. if that
@@ -586,13 +680,19 @@ export async function updateAttioAttributes(
 }
 //#endregion
 
-//#region mapping a lead onto Attio attributes
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <map a lead onto attio values>
+
 //---------------------------------------------------------------------------------------------------------
 //Which provider field lands on which Attio slug. Pure, so the mapping is testable without a network, and in
 //one place so a new provider inherits the whole thing by filling in an InterestedLead.
 //A slug absent from these three objects is a slug these workflows never write.
 //---------------------------------------------------------------------------------------------------------
 
+//#region <person, company, deal>
 /** [LOGIC] USES: attributionValues (lib/providers.ts); toDate, withoutEmpty (this module). Pure. */
 export function personValuesFor(lead: InterestedLead, companyId: string | null = null): AttioValues {
   const values: Record<string, unknown> = {
@@ -665,13 +765,13 @@ export function dealValuesFor(lead: InterestedLead): AttioValues {
 }
 //#endregion
 
-//#region company resolution and deal naming
-export interface ResolvedCompany {
-  readonly id: string;
-  /** The name Attio holds, which is what the deal is named after - not what the provider called it. */
-  readonly name: string | null;
-}
+//#endregion
+//=============================================================================================================
 
+//=============================================================================================================
+//#region <resolve the company and name the deal>
+
+//#region <company>
 //---------------------------------------------------------------------------------------------------------
 //The company an interested lead belongs to, found or created, and enriched in passing.
 //FLOW: 1. the person is already linked to one -> that one wins, whatever the provider says. 2. otherwise look
@@ -725,7 +825,9 @@ export async function resolveInterestedCompany(
   //===============
   return { id: created.id.record_id, name: recordDisplayName(created) };
 }
+//#endregion
 
+//#region <deal name>
 //---------------------------------------------------------------------------------------------------------
 //What a deal this codebase opens is called. Strictly the company name, with no other form.
 //The convention is strict so a person's name never becomes a deal name: a deal belongs to a company even when
@@ -746,31 +848,13 @@ export function interestedDealName(companyName: string | null): string {
 }
 //#endregion
 
-//#region suppression
-export interface SuppressionOutcome {
-  readonly platform: string;
-  readonly status: "suppressed" | "skipped" | "failed";
-  readonly detail: string | null;
-}
+//#endregion
+//=============================================================================================================
 
-export interface SuppressionResult {
-  readonly outcomes: readonly SuppressionOutcome[];
-  /** One entry per platform that could not be suppressed. Empty means the lead is suppressed everywhere. */
-  readonly failures: readonly string[];
-}
+//=============================================================================================================
+//#region <suppress the lead everywhere>
 
-//The Attio DNC list, prepended to the third-party channels. It lives here rather than in the register because
-//it is the only channel that touches Attio, and keeping it here is what lets lib/providers.ts stay free of any
-//Attio import. It is also the channel that governs Aircall dialling, which has no API of its own to call.
-//[LOGIC] USES: addPersonToList, LISTS (lib/attio.ts).
-const ATTIO_DNC_CHANNEL: SuppressionChannel = {
-  platform: "attio DNC list",
-  suppress: async (targets) => {
-    await addPersonToList(targets.personId, LISTS.DNC, targets.personName);
-    return { status: "suppressed" };
-  },
-};
-
+//#region <every channel>
 //---------------------------------------------------------------------------------------------------------
 //Stops every outbound channel contacting a lead who has already said yes. One function, called by every
 //interested workflow, because interest is a fact about the person and not about the channel that found it: a
@@ -823,8 +907,12 @@ export async function suppressInterestedLead(targets: SuppressionTargets): Promi
 }
 //#endregion
 
-//#region declining a repeat
+//#endregion
 //=============================================================================================================
+
+//=============================================================================================================
+//#region <decline repeated events>
+
 //WHY THIS EXISTS. Attio offers no idempotency key and no upsert for notes - createNote (lib/attio.ts) appends,
 //so the same event arriving twice leaves two identical notes on the Person and two on the Deal, plus a
 //transcript apiece. Every other step of the workflow converges on its own: the person, company and deal are
@@ -847,12 +935,8 @@ export async function suppressInterestedLead(targets: SuppressionTargets): Promi
 //production is deliveries seconds apart, which this catches; simultaneous ones would need a lock Attio cannot
 //give us. The same gap already lets two simultaneous events create two Person records, which predates this
 //check and is not addressed by it.
-//=============================================================================================================
 
-//Long enough to cover a provider's retry and a fan-out across campaigns, short enough that a lead who replies
-//again days later still earns a fresh note. Overridable per deployment without a redeploy.
-export const DEFAULT_DUPLICATE_WINDOW_MS = 15 * 60 * 1_000;
-
+//#region <duplicate window>
 //---------------------------------------------------------------------------------------------------------
 //[STABILITY] A malformed value falls back rather than throwing, matching budgetMs (lib/run-budget.ts): losing
 //the override is a tuning problem, losing the event is a data problem. Zero is honoured as "off", because
@@ -874,7 +958,9 @@ function duplicateWindowMs(): number {
   reportConfigValue("INTERESTED_DUPLICATE_WINDOW_MS", raw);
   return parsed;
 }
+//#endregion
 
+//#region <repeat check>
 //---------------------------------------------------------------------------------------------------------
 //Whether this person already carries `title` from inside the window.
 //FLOW: 1. window of zero -> the check is off, nothing is read. 2. list the person's notes. 3. match on title
@@ -938,38 +1024,13 @@ function duplicateOutcome(person: AttioPerson, personName: string): InterestedOu
 }
 //#endregion
 
-//#region the shared workflow
-export interface InterestedWorkflow {
-  readonly lead: InterestedLead;
-  /**
-   * How this provider identifies the person in Attio, in its own order of confidence - HeyReach leads with a
-   * profile URL, Instantly and Aircall with an address. Returning null means no such person exists yet and one
-   * is created from the lead.
-   */
-  readonly findPerson: () => Promise<AttioPerson | null>;
-  /**
-   * This provider's own message history, already rendered for the note. A thunk rather than a string because
-   * fetching a thread costs a request, and it should not be paid until the lead is known to be recordable.
-   */
-  readonly history: () => Promise<string>;
-  /** What this event is called in the logs - "aircall call 4821", "heyreach-interested". */
-  readonly subject: string;
-}
+//#endregion
+//=============================================================================================================
 
-export interface InterestedOutcome {
-  readonly personId: string;
-  readonly personName: string;
-  readonly dealId: string;
-  readonly companyId: string | null;
-  readonly suppression: SuppressionResult;
-  /**
-   * True when this event repeated one already recorded and the workflow declined to write anything. The ids
-   * are the existing records' - see recentlyNoted. Routes report it so a suppressed repeat reads as a
-   * decision in the response, not as a silent success.
-   */
-  readonly duplicate: boolean;
-}
+//=============================================================================================================
+//#region <record an interested lead>
 
+//#region <shared workflow>
 //---------------------------------------------------------------------------------------------------------
 //Records an interested lead in Attio. Every provider's route or cron ends here, and this is the whole of what
 //they share - so a fourth platform needs an extractor, a lookup, and a note renderer, and inherits the rest.
@@ -1080,3 +1141,6 @@ async function runInterestedLead(workflow: InterestedWorkflow): Promise<Interest
   return { personId, personName, dealId, companyId: company?.id ?? null, suppression, duplicate: false };
 }
 //#endregion
+
+//#endregion
+//=============================================================================================================

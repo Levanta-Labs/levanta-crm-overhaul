@@ -1,3 +1,6 @@
+//=============================================================================================================
+//#region <import statements>
+
 import { findPersonByEmail } from "../lib/attio.js";
 import { hasWebhookSecret, json, requestJson, serverError } from "../lib/http.js";
 import {
@@ -15,6 +18,12 @@ import {
 import { errorMessage, isJsonObject, stringValue } from "../lib/json.js";
 import { toE164 } from "../lib/phone.js";
 
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <types and globals>
+
 export interface InstantlyInterestedFields {
   readonly eventType: string;
   readonly email: string;
@@ -24,92 +33,11 @@ export interface InstantlyInterestedFields {
   readonly campaignName: string | null;
 }
 
-/** Instantly sends a flat v2 body. event_type and lead_email are required; the rest is best-effort enrichment. */
-export function parseInstantlyInterestedWebhook(value: unknown): InstantlyInterestedFields {
-  if (!isJsonObject(value)) throw new Error("Instantly webhook payload must be an object");
-  const eventType = stringValue(value.event_type);
-  const email = stringValue(value.lead_email);
-  if (!eventType || !email) throw new Error("Instantly webhook is missing event_type or lead_email");
-  return {
-    eventType,
-    email,
-    firstName: stringValue(value.firstName),
-    lastName: stringValue(value.lastName),
-    companyName: stringValue(value.companyName),
-    campaignName: stringValue(value.campaign_name),
-  };
-}
+//#endregion
+//=============================================================================================================
 
-/** Renders the thread oldest-first so the note reads top to bottom. Sorted on timestampEmail, not creation order. */
-export function formatInstantlyThread(
-  emails: readonly InstantlyEmail[],
-  campaignName: string | null,
-): string {
-  if (emails.length === 0) {
-    return campaignName
-      ? `No email history found. Campaign: ${campaignName}`
-      : "No email history found.";
-  }
-  return [...emails]
-    .sort((left, right) => Date.parse(left.timestampEmail) - Date.parse(right.timestampEmail))
-    .map(
-      (email) =>
-        `**${email.timestampEmail}** (${email.emailType})\n${email.subject ?? ""}\n\n${email.bodyText ?? ""}`,
-    )
-    .join("\n\n---\n\n");
-}
-
-//---------------------------------------------------------------------------------------------------------
-//The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
-//The webhook is thin - an event type, an address, sometimes a name and a campaign. Everything else Instantly
-//knows about this person (job title, LinkedIn URL, phone, industry, headcount, revenue, location, the company's
-//postal address) lives on the lead record under the campaign's custom variables, which is why the route reads
-//it back before mapping. Webhook values win where both carry the same field: the webhook describes the event
-//that just happened, the record describes the row as uploaded.
-//USES: interestedLead (lib/interested.ts), toE164 (lib/phone.ts). Pure.
-//---------------------------------------------------------------------------------------------------------
-export function instantlyLead(
-  fields: InstantlyInterestedFields,
-  enriched: InstantlyLead | null,
-  occurredAtMs: number,
-): InterestedLead {
-  return interestedLead("instantly", {
-    emails: [fields.email],
-    //Instantly stores a phone as it was uploaded, punctuated or not; toE164 drops anything that is not a
-    //dialable number rather than writing a fragment into the CRM.
-    phones: [toE164(enriched?.phone ?? null)].filter((phone): phone is string => phone !== null),
-    firstName: fields.firstName ?? enriched?.firstName ?? null,
-    lastName: fields.lastName ?? enriched?.lastName ?? null,
-    linkedin: enriched?.linkedin ?? null,
-    jobTitle: enriched?.jobTitle ?? null,
-    location: enriched?.location ?? null,
-    companyName: fields.companyName ?? enriched?.companyName ?? null,
-    companyDomain: enriched?.companyDomain ?? null,
-    companyAddress: enriched?.companyAddress ?? null,
-    employeeCount: enriched?.employeeCount ?? null,
-    annualRevenue: enriched?.annualRevenue ?? null,
-    industry: enriched?.industry ?? null,
-    website: enriched?.website ?? null,
-    campaignName: fields.campaignName,
-    occurredAtMs,
-  });
-}
-
-/**
- * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
- * failure is logged and swallowed rather than raised.
- * USES: fetchInstantlyLead (lib/instantly.ts), errorMessage (lib/json.ts).
- */
-async function enrichFromInstantly(email: string): Promise<InstantlyLead | null> {
-  try {
-    return await fetchInstantlyLead(email);
-  } catch (error) {
-    console.warn(
-      `[route] instantly-interested: lead lookup for ${email} failed, so only the webhook's own fields are used - ${errorMessage(error)}`,
-    );
-    return null;
-  }
-}
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Instantly posts here when a lead is marked interested.
@@ -199,3 +127,113 @@ Campaign: ${fields.campaignName}` : ""}`;
     return serverError("Instantly interested webhook error", error);
   }
 }
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <read the webhook>
+
+//#region <parse the body>
+/** Instantly sends a flat v2 body. event_type and lead_email are required; the rest is best-effort enrichment. */
+export function parseInstantlyInterestedWebhook(value: unknown): InstantlyInterestedFields {
+  if (!isJsonObject(value)) throw new Error("Instantly webhook payload must be an object");
+  const eventType = stringValue(value.event_type);
+  const email = stringValue(value.lead_email);
+  if (!eventType || !email) throw new Error("Instantly webhook is missing event_type or lead_email");
+  return {
+    eventType,
+    email,
+    firstName: stringValue(value.firstName),
+    lastName: stringValue(value.lastName),
+    companyName: stringValue(value.companyName),
+    campaignName: stringValue(value.campaign_name),
+  };
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
+
+//=============================================================================================================
+//#region <record the interested lead>
+
+//#region <read the lead record>
+/**
+ * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
+ * failure is logged and swallowed rather than raised.
+ * USES: fetchInstantlyLead (lib/instantly.ts), errorMessage (lib/json.ts).
+ */
+async function enrichFromInstantly(email: string): Promise<InstantlyLead | null> {
+  try {
+    return await fetchInstantlyLead(email);
+  } catch (error) {
+    console.warn(
+      `[route] instantly-interested: lead lookup for ${email} failed, so only the webhook's own fields are used - ${errorMessage(error)}`,
+    );
+    return null;
+  }
+}
+//#endregion
+
+//#region <shape for attio>
+//---------------------------------------------------------------------------------------------------------
+//The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
+//The webhook is thin - an event type, an address, sometimes a name and a campaign. Everything else Instantly
+//knows about this person (job title, LinkedIn URL, phone, industry, headcount, revenue, location, the company's
+//postal address) lives on the lead record under the campaign's custom variables, which is why the route reads
+//it back before mapping. Webhook values win where both carry the same field: the webhook describes the event
+//that just happened, the record describes the row as uploaded.
+//USES: interestedLead (lib/interested.ts), toE164 (lib/phone.ts). Pure.
+//---------------------------------------------------------------------------------------------------------
+export function instantlyLead(
+  fields: InstantlyInterestedFields,
+  enriched: InstantlyLead | null,
+  occurredAtMs: number,
+): InterestedLead {
+  return interestedLead("instantly", {
+    emails: [fields.email],
+    //Instantly stores a phone as it was uploaded, punctuated or not; toE164 drops anything that is not a
+    //dialable number rather than writing a fragment into the CRM.
+    phones: [toE164(enriched?.phone ?? null)].filter((phone): phone is string => phone !== null),
+    firstName: fields.firstName ?? enriched?.firstName ?? null,
+    lastName: fields.lastName ?? enriched?.lastName ?? null,
+    linkedin: enriched?.linkedin ?? null,
+    jobTitle: enriched?.jobTitle ?? null,
+    location: enriched?.location ?? null,
+    companyName: fields.companyName ?? enriched?.companyName ?? null,
+    companyDomain: enriched?.companyDomain ?? null,
+    companyAddress: enriched?.companyAddress ?? null,
+    employeeCount: enriched?.employeeCount ?? null,
+    annualRevenue: enriched?.annualRevenue ?? null,
+    industry: enriched?.industry ?? null,
+    website: enriched?.website ?? null,
+    campaignName: fields.campaignName,
+    occurredAtMs,
+  });
+}
+//#endregion
+
+//#region <format the email thread>
+/** Renders the thread oldest-first so the note reads top to bottom. Sorted on timestampEmail, not creation order. */
+export function formatInstantlyThread(
+  emails: readonly InstantlyEmail[],
+  campaignName: string | null,
+): string {
+  if (emails.length === 0) {
+    return campaignName
+      ? `No email history found. Campaign: ${campaignName}`
+      : "No email history found.";
+  }
+  return [...emails]
+    .sort((left, right) => Date.parse(left.timestampEmail) - Date.parse(right.timestampEmail))
+    .map(
+      (email) =>
+        `**${email.timestampEmail}** (${email.emailType})\n${email.subject ?? ""}\n\n${email.bodyText ?? ""}`,
+    )
+    .join("\n\n---\n\n");
+}
+//#endregion
+
+//#endregion
+//=============================================================================================================
