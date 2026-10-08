@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { findPersonByEmail, findPersonByLinkedIn } from "../lib/attio.js";
 import { hasWebhookSecret, json, requestJson, serverError } from "../lib/http.js";
@@ -14,9 +15,11 @@ import {
 } from "../lib/outfound.js";
 import { describeShape, errorMessage, isJsonObject, stringValue } from "../lib/json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface OutfoundInterestedFields {
   /** The lead category that fired the relay, verbatim - "Interested", "Meeting Booked", "Refer Request". */
@@ -35,9 +38,11 @@ export interface OutfoundInterestedFields {
   readonly timestamp: string | null;
 }
 
+//#endregion
 //=============================================================================================================
 
-// ---------- RUN ----------
+//=============================================================================================================
+//#region <RUN>
 
 //---------------------------------------------------------------------------------------------------------
 //Webhook entry point. Outfound's Webhook Relay posts here when a lead is categorized.
@@ -122,11 +127,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-// ---------------------------
+//#endregion
+//=============================================================================================================
 
-//read the webhook=============================================================================================
+//=============================================================================================================
+//#region <read the webhook>
 
-//#region <read the webhook: parse the body>
+//#region <parse the body>
 //---------------------------------------------------------------------------------------------------------
 //Outfound posts a flat body. Only lead_email is required of it here.
 //
@@ -170,7 +177,7 @@ export function parseOutfoundInterestedWebhook(value: unknown): OutfoundInterest
 }
 //#endregion
 
-//#region <read the webhook: event time>
+//#region <event time>
 /**
  * [LOGIC] When the event happened, by Outfound's clock rather than ours. The warehouse lags by minutes, so the
  * receiving clock would date an interested lead by when the relay got through rather than when they replied.
@@ -184,11 +191,13 @@ export function outfoundOccurredAtMs(timestamp: string | null, nowMs: number): n
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record the interested lead===================================================================================
+//=============================================================================================================
+//#region <record the interested lead>
 
-//#region <record the interested lead: read the lead record>
+//#region <read the lead record>
 /**
  * [DEBUG] Enrichment must never fail the event: the webhook alone is enough to record the lead, so a lookup
  * failure is logged and swallowed rather than raised. It also supplies the note's history, which is why a
@@ -207,7 +216,7 @@ async function enrichFromOutfound(email: string): Promise<OutfoundLead | null> {
 }
 //#endregion
 
-//#region <record the interested lead: shape for attio>
+//#region <shape for attio>
 //---------------------------------------------------------------------------------------------------------
 //The lead as the shared workflow sees it: the webhook body, plus whatever the lead record adds.
 //Outfound's webhook is the richest of the three - it already carries the name, company, domain, job title,
@@ -247,7 +256,7 @@ export function outfoundLead(
 }
 //#endregion
 
-//#region <record the interested lead: format the email thread>
+//#region <format the email thread>
 /** Renders the correspondence oldest-first so the note reads top to bottom. Sorted on the email timestamp. */
 export function formatOutfoundThread(
   conversations: readonly OutfoundConversation[],
@@ -268,4 +277,5 @@ export function formatOutfoundThread(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
