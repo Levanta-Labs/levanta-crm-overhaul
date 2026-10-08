@@ -20,16 +20,19 @@
 //committed; losing the transcript is a nuisance, losing the event is a data problem. Every entry point either
 //no-ops outside a scope or swallows its own failure onto console.
 
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createNote, type AttioObject, type AttioRecord } from "./attio.js";
 import { arrayValue, errorMessage, isJsonObject, numberValue, stringValue, type JsonObject } from "./json.js";
 import { attributionOptionTitle, providerDisplayName, type Provider } from "./providers.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 //---------------------------------------------------------------------------------------------------------
 //One record the run touched, and what it did to it.
@@ -89,9 +92,11 @@ const METHOD_PREFIX: Readonly<Record<MirroredMethod, string>> = { log: "", warn:
 let originalPrinters: Record<MirroredMethod, ConsolePrinter> | null = null;
 let openScopes = 0;
 
+//#endregion
 //=============================================================================================================
 
-//mirror the console===========================================================================================
+//=============================================================================================================
+//#region <mirror the console>
 
 //---------------------------------------------------------------------------------------------------------
 //Every console print made while a run is open is copied into that run's transcript.
@@ -110,7 +115,7 @@ let openScopes = 0;
 //caller that swapped console.log itself - the unit tests do - gets its own function back rather than a wrapper.
 //---------------------------------------------------------------------------------------------------------
 
-//#region <mirror the console: install and restore>
+//#region <install and restore>
 function installConsoleMirror(): void {
   openScopes += 1;
   if (originalPrinters) return;
@@ -135,7 +140,7 @@ function restoreConsoleMirror(): void {
 }
 //#endregion
 
-//#region <mirror the console: copy a line into the transcript>
+//#region <copy a line into the transcript>
 /** [LOGIC] Wall-clock time of day to the millisecond. The date is in the note's own timestamp already. */
 function stamp(): string {
   return new Date().toISOString().slice(11, 23);
@@ -153,11 +158,13 @@ function record(method: MirroredMethod, parts: readonly unknown[]): void {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//record the run===============================================================================================
+//=============================================================================================================
+//#region <record the run>
 
-//#region <record the run: open a run>
+//#region <open a run>
 //---------------------------------------------------------------------------------------------------------
 //Opens a transcript for ONE interested lead and runs the workflow inside it.
 //Scoped per lead rather than per invocation on purpose: the Aircall sync records several interested calls in a
@@ -183,7 +190,7 @@ export async function withRunLog<T>(provider: Provider, run: () => Promise<T>): 
 }
 //#endregion
 
-//#region <record the run: track touched records>
+//#region <track touched records>
 //---------------------------------------------------------------------------------------------------------
 //Registers a record the run touched, and takes its "before" picture.
 //
@@ -225,11 +232,13 @@ export function runLogApplied(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//write the transcript=========================================================================================
+//=============================================================================================================
+//#region <write the transcript>
 
-//#region <write the transcript: post the notes>
+//#region <post the notes>
 //---------------------------------------------------------------------------------------------------------
 //Posts the transcript to every record the run touched. Called once, by withRunLog.
 //
@@ -263,7 +272,7 @@ async function writeRunLogNotes(state: RunLogState): Promise<void> {
 }
 //#endregion
 
-//#region <write the transcript: build one file per record>
+//#region <build one file per record>
 //---------------------------------------------------------------------------------------------------------
 //The transcript as one file per record touched, built in memory.
 //
@@ -323,11 +332,13 @@ function referenceNames(state: RunLogState): ReadonlyMap<string, string> {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//describe record values=======================================================================================
+//=============================================================================================================
+//#region <describe record values>
 
-//#region <describe record values: whole record>
+//#region <whole record>
 //---------------------------------------------------------------------------------------------------------
 //Every attribute the record actually holds, one per line, in the order Attio returned them.
 //Attributes holding nothing are omitted rather than printed empty: the point of the two states is what
@@ -361,7 +372,7 @@ function afterValues(target: RunLogRecord): JsonObject {
 }
 //#endregion
 
-//#region <describe record values: single values>
+//#region <single values>
 //---------------------------------------------------------------------------------------------------------
 //One Attio value as a human would read it.
 //
@@ -440,7 +451,7 @@ function describeLocation(value: Record<string, unknown>): string | null {
 }
 //#endregion
 
-//#region <describe record values: text helpers>
+//#region <text helpers>
 /** [LOGIC] `phone_numbers` reads as "phone numbers". Attio's slug is already the label, bar the underscores. */
 function humanizeSlug(slug: string): string {
   return slug.replace(/_/g, " ");
@@ -451,4 +462,5 @@ function truncate(value: string): string {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
