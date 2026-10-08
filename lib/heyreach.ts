@@ -1,4 +1,5 @@
-//imports======================================================================================================
+//=============================================================================================================
+//#region <import statements>
 
 import { credentialHint, HEYREACH_BASE, heyreachHeaders } from "./endpoints.js";
 import { rateLimitWaitMs } from "./http.js";
@@ -11,9 +12,11 @@ import {
   stringValue,
 } from "./json.js";
 
+//#endregion
 //=============================================================================================================
 
-//types and globals============================================================================================
+//=============================================================================================================
+//#region <types and globals>
 
 export interface HeyReachMessage {
   readonly createdAt: string;
@@ -94,11 +97,13 @@ const RATE_LIMIT_BASE_MS = 500;
 //waiting, because the next run starts with a fresh allowance either way - see rateLimitWaitMs (lib/http.ts).
 const RATE_LIMIT_MAX_WAIT_MS = 5_000;
 
+//#endregion
 //=============================================================================================================
 
-//parse heyreach responses=====================================================================================
+//=============================================================================================================
+//#region <parse heyreach responses>
 
-//#region <parse heyreach responses: conversations>
+//#region <conversations>
 function parseMessage(value: unknown): HeyReachMessage {
   if (!isJsonObject(value)) throw new Error("HeyReach returned an invalid message");
   const createdAt = stringValue(value.createdAt);
@@ -151,7 +156,7 @@ export function parseHeyReachConversation(value: unknown): HeyReachConversation 
 }
 //#endregion
 
-//#region <parse heyreach responses: campaigns>
+//#region <campaigns>
 function parseCampaign(value: unknown): HeyReachCampaign {
   if (!isJsonObject(value)) throw new Error("HeyReach returned an invalid campaign");
   const campaignId = numberValue(value.campaignId);
@@ -164,9 +169,11 @@ function parseCampaign(value: unknown): HeyReachCampaign {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//heyreach transport===========================================================================================
+//=============================================================================================================
+//#region <heyreach transport>
 
 //Rate limiting.
 //
@@ -180,7 +187,7 @@ function parseCampaign(value: unknown): HeyReachCampaign {
 //transport can only react to the refusal when it arrives. A refused request was not processed, so repeating it
 //cannot apply anything twice - which is what makes this safe on StopLeadInCampaign as well as on the reads.
 
-//#region <heyreach transport: requests>
+//#region <requests>
 //---------------------------------------------------------------------------------------------------------
 //Single transport for every HeyReach call. Nothing else in this module calls fetch.
 //
@@ -225,11 +232,13 @@ async function heyreachFetch(path: string, body: unknown): Promise<unknown> {
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//read conversations===========================================================================================
+//=============================================================================================================
+//#region <read conversations>
 
-//#region <read conversations: conversation windows>
+//#region <conversation windows>
 //---------------------------------------------------------------------------------------------------------
 //Reads conversations with their full message lists, paginated. Two callers: the touchpoint cron passes a time
 //window, the interested webhook passes one profile URL.
@@ -320,7 +329,7 @@ export async function fetchHeyReachConversations(
 }
 //#endregion
 
-//#region <read conversations: message ids>
+//#region <message ids>
 /**
  * A stable per-message ID. HeyReach gives messages none, and the cursor needs one to tell events apart at the
  * same timestamp, so the identity is a SHA-256 of the fields that define the message. Deterministic across
@@ -344,11 +353,13 @@ export async function heyReachMessageId(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
 
-//stop outreach to a lead======================================================================================
+//=============================================================================================================
+//#region <stop outreach to a lead>
 
-//#region <stop outreach to a lead: active campaigns>
+//#region <active campaigns>
 //---------------------------------------------------------------------------------------------------------
 //Ends outbound sequencing for a lead who has said yes. The only provider-side write in the codebase.
 //Scoped to the one lead: StopLeadInCampaign withdraws them from a campaign, it does not halt the campaign.
@@ -399,4 +410,5 @@ export async function stopLeadInActiveCampaigns(
 }
 //#endregion
 
+//#endregion
 //=============================================================================================================
