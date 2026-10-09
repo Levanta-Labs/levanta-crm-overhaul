@@ -826,7 +826,8 @@ two kinds of failure:
 - **Credentials.** One small page is read from Supabase, Attio, Aircall, Instantly, HeyReach, and Outfound, which
   proves each key is accepted. The Outfound checks also read its DNC list, so the suppression channel is known to
   have somewhere to write, and its `/rate-limit` endpoint, which reports the tier the touchpoint sync is spending
-  one request per thread against.
+  one request per thread against. The HeyReach check also reads its lead and company blacklists and prints how
+  many entries each holds, since a full list (1,000 by default) makes suppression fail.
 - **Schema and configuration.** All eight counter slugs are checked against the live Attio attribute list for the
   people and companies objects, both list slugs against the workspace's lists, and `ATTIO_DEFAULT_DEAL_OWNER`
   against the workspace members. A wrong slug or a renamed list is caught here rather than on the first touchpoint
