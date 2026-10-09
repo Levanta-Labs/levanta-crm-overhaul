@@ -25,11 +25,11 @@ import { toE164 } from "../lib/phone.js"; //phone number to "+15551234567" form
 const OUTCOME_EVENT = "outbound_campaign.outcome_recorded"; //the event name to act on
 
 //Outcomes that count as interested, matched by ID so a rename in Aircall cannot break the match.
-//Names as of 2026-10-07, from GET /v1/campaign_outcomes.
+//Names as of 2026-10-09, from GET /v1/campaign_outcomes.
 const INTERESTED_OUTCOME_IDS: ReadonlySet<string> = new Set([ //ids of the interested outcomes
   "019fd21c-357f-7c2a-b061-3b8b04a0146e", //Booked
-  "019fd21c-5b09-70fc-9356-cfd01be98477", //Connected
-  "019fd77c-37b0-7a87-9565-47e77576c25b", //Referral
+  "019fd21c-9a1a-7fa9-b785-918b7da1d00e", //Follow Up
+  "01a12122-77f5-7f67-b736-82b693ff6d22", //More Info
 ]);
 
 //The parts of an outcome_recorded webhook the workflow needs.
@@ -96,7 +96,7 @@ export async function POST(request: Request): Promise<Response> {
       return json({ ignored: true, reason: "outcome event missing call_id, campaign_id or outcome_id" }); //200: a resend would be identical
     }
 
-    if (!isInterestedOutcome(outcome.outcomeId)) { //step 5: not Booked, Connected or Referral
+    if (!isInterestedOutcome(outcome.outcomeId)) { //step 5: not Booked, Follow Up or More Info
       console.log(`[route] aircall-interested: ignored ${JSON.stringify(outcome.outcomeLabel)} on call ${outcome.callId}`); //e.g. "No Answer"
       return json({ ignored: true, reason: "not an interested outcome" }); //most events end here
     }
@@ -140,11 +140,11 @@ export function parseAircallOutcomeWebhook(value: unknown): AircallOutcomeWebhoo
 //---------------------------------------------------------------------------------------------------------
 //Base function. Says whether an outcome counts as interested.
 //Input: outcomeId - the outcome's UUID from the webhook.
-//Output: true for Booked, Connected or Referral; false otherwise.
+//Output: true for Booked, Follow Up or More Info; false otherwise.
 //Workflow: aircall-interested webhook step 5 - drops every non-interested outcome. Also called by unit tests.
 //---------------------------------------------------------------------------------------------------------
 export function isInterestedOutcome(outcomeId: string): boolean {
-  return INTERESTED_OUTCOME_IDS.has(outcomeId); //true for Booked, Connected, Referral
+  return INTERESTED_OUTCOME_IDS.has(outcomeId); //true for Booked, Follow Up, More Info
 }
 //#endregion
 

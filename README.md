@@ -343,7 +343,7 @@ alpha-2 code - which reads correctly as a Person location but is not a postal ad
 | --- | --- | --- |
 | `/api/instantly-interested` | Instantly | A `lead_interested` webhook using current top-level v2 fields; the route reads the lead record back for enrichment |
 | `/api/outfound-interested` | Outfound | A Webhook Relay prospect payload carrying `lead_email`. **No event type is filtered on** - which lead categories fire the relay is configured on Outfound's side, so everything authenticated is recorded |
-| `/api/aircall-interested` | Aircall | An `outbound_campaign.outcome_recorded` webhook, authenticated by the `token` field in its body. Fires for **every** outcome on **every** campaign; the route acts only on Booked, Connected and Referral, by outcome ID, and acknowledges the rest with a `200` |
+| `/api/aircall-interested` | Aircall | An `outbound_campaign.outcome_recorded` webhook, authenticated by the `token` field in its body. Fires for **every** outcome on **every** campaign; the route acts only on Booked, Follow Up and More Info, by outcome ID, and acknowledges the rest with a `200` |
 | `/api/heyreach-interested` | HeyReach | A HeyReach webhook carrying a lead object, nested or top-level, containing `profileUrl`/`linkedInUrl` or `email`. **No event type is filtered on** - which events fire is configured per webhook in HeyReach and is edited there without a deploy, so the route records everything authenticated and *names* the event in the log instead |
 | `/api/cron/aircall-touchpoint-sync` | Vercel Cron | Authorized GET every ten minutes (`*/10 * * * *`). Touchpoints only - interested leads arrive at `/api/aircall-interested` |
 | `/api/cron/instantly-touchpoint-sync` | Vercel Cron | Authorized GET every five minutes |
@@ -362,7 +362,7 @@ three providers: one webhook route, `api/aircall-interested.ts`, calling `record
 
 **It fires for every outcome, on every campaign.** Aircall offers no filter, so No Answer and Voicemail arrive as
 well as Booked - about 90 deliveries a day at October 2026 volume. The route filters them itself, before any
-network call, against `INTERESTED_OUTCOME_IDS`: Booked, Connected and Referral. They are matched by **ID**, not by
+network call, against `INTERESTED_OUTCOME_IDS`: Booked, Follow Up and More Info. They are matched by **ID**, not by
 name, so renaming an outcome in Aircall cannot break the match - the same reasoning as the attribution option IDs.
 Adding an outcome means adding its ID to that set; the IDs are listed by `GET /v1/campaign_outcomes`.
 
