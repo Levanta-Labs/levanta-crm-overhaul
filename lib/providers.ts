@@ -242,13 +242,13 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
         targets.profileUrl,
         targets.email,
       );
-      await blacklistHeyReachLead(targets.profileUrl, targets.email); //block the lead workspace-wide
+      const blacklistedBy = await blacklistHeyReachLead(targets.profileUrl, targets.email); //block the lead workspace-wide
       //Both campaign numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had
       //been left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
       //"still matching" because HeyReach finds the person behind a blacklist entry in the background.
       return { //done, with every part
         status: "suppressed", //lead was stopped
-        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted (still matching)`, //for the log
+        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted by ${blacklistedBy} (still matching)`, //for the log
       };
     },
   },

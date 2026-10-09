@@ -262,9 +262,12 @@ never the domain: a domain-wide block would suppress every colleague of the pers
 
 HeyReach stops the lead in campaigns before blacklisting them, because a full blacklist (1,000 leads per
 workspace by default) throws, and that must not leave the lead in a live sequence. The blacklist is what covers
-an email-only lead, since `StopLeadInCampaign` needs a profile URL. The error says whether the list is full or
-why HeyReach rejected the entry. Whether HeyReach found the person behind a lead entry is not known at write time - it
-resolves in the background and shows as `NotFound` on its blacklist page if it never does.
+an email-only lead, since `StopLeadInCampaign` needs a profile URL. The blacklist entry carries one identifier:
+the profile URL when there is one, the email only when there is not or HeyReach rejected the URL. HeyReach
+skips a whole entry over one invalid identifier, and only an email can spend a reverse-lookup credit. The error
+says whether the list is full or why HeyReach rejected the lead. Whether HeyReach found the person behind a
+lead entry is not known at write time - it resolves in the background and shows as `NotFound` on its blacklist
+page if it never does.
 
 Aircall is absent by design: it needs no suppression of its own. Aircall dialling is governed by the Attio DNC
 list, which is why that is the first channel and the one that matters most.
@@ -770,7 +773,7 @@ Secret values are never logged.
 | `[interested]` | The shared interested workflow's own verdict, for every provider: completed with the person, deal and company it finished with, or declined as a repeat of an event already recorded |
 | `[lookup]` | Each person, company, and deal search and its result, naming the attribute searched and the record matched, plus whether that person is on the Master TAM list. A company line also says when the person was already linked to one, or when neither Attio nor the provider names one and the deal will be named for an unknown company. An Instantly lead lookup names which enrichment fields arrived, by field name only. The deal line reports both outcomes - how many deals the person already had and which is being reused, or that they had none and one is being created - because "checked and found none" and "never checked" must not read alike |
 | `[action]` | Each write and its outcome: person or company created, a record updated with the attribute list, a record left untouched because every target attribute was already populated, deal created, deal reused, note added, blocklist entry added, counter moved from one value to the next. A failure is reported as `[action] FAILED` naming the action and record before the error propagates |
-| `[suppress]` | One line per outbound platform - suppressed, skipped with the identifier it lacked, or `FAILED` with the reason - then a summary naming every platform and its outcome. A failure here is reported, not raised: the Attio record was already written. The HeyReach line carries two figures, how many campaigns the lead is in and how many of those still live ones they were withdrawn from, because no campaign is ever halted and a single count read as though one had been, followed by the blacklist result |
+| `[suppress]` | One line per outbound platform - suppressed, skipped with the identifier it lacked, or `FAILED` with the reason - then a summary naming every platform and its outcome. A failure here is reported, not raised: the Attio record was already written. The HeyReach line carries two figures, how many campaigns the lead is in and how many of those still live ones they were withdrawn from, because no campaign is ever halted and a single count read as though one had been, followed by which identifier - profile URL or email - the lead was blacklisted by |
 | `[attio]` | An attribute was not written and the event continued anyway: a multiselect left alone because its existing entries could not all be read back, so a replacing write would have risked deleting real data; or a value Attio rejected, named individually, with a count of what was written and what was dropped |
 | `[event]` | Why one polled touchpoint was skipped: no phone or lead email on the record, no Attio person matched, or the person is not on the Master TAM list. |
 | `[run]` | One summary per sync: how many records were in the window, how many were processed, skipped, off-TAM, or failed and passed over, and the new cursor. Aircall's `fetched` count includes the two-hour reach-back, so most of it is normally before the cursor. Every sync also states how many records in its window came from before the cursor and were passed over as already counted, so the line accounts for the whole window rather than leaving the shortfall to be inferred; the response bodies carry it as `beforeCursor`. On HeyReach that figure is normally most of the window, because its fetch is day-granular - see the `[PERF]` note in the sync |
@@ -804,8 +807,8 @@ The unit suite mocks every external write and covers provider response validatio
 event identity, Attio helpers, and Supabase cursor persistence. The shared interested workflow is covered
 separately in `tests/unit/interested.test.ts`: the attribute transforms at each bucket boundary, the never-overwrite
 rule and the Lead Source exception to it, the multiselect merge and the cases where it declines to write, the strict deal naming, and suppression
-continuing across platforms after one of them fails, and HeyReach blacklisting an email-only lead and naming a
-full or refused blacklist.
+continuing across platforms after one of them fails, and HeyReach blacklisting by one identifier (URL first,
+email when there is no URL or it was rejected) and naming a full or refused blacklist.
 
 Run opt-in, read-only smoke tests against configured live accounts:
 

@@ -606,53 +606,86 @@ describe("suppressing an interested lead", () => {
     }
   });
 
-  //Only HeyReach is looked at here; the other channels are answered so they do not throw.
-  function heyreachOnlyMock(blacklist: (url: string) => Response) {
-    return installFetchMock((url) => {
-      if (url.includes("/blacklist/")) return blacklist(url);
+  //Only HeyReach is looked at here; the other channels are answered so they do not throw. Every blacklist
+  //request body is recorded, so a test can see which identifier was sent.
+  function heyreachOnlyMock(blacklist: (entry: Record<string, string>) => Response) {
+    const entries: Record<string, string>[] = [];
+    const mock = installFetchMock((url, init) => {
+      if (url.includes("/blacklist/AddLeads")) {
+        const entry = JSON.parse(String(init?.body)).leads[0];
+        entries.push(entry);
+        return blacklist(entry);
+      }
       if (url.includes("GetCampaignsForLead")) return jsonResponse({ items: [] });
       if (url.includes("/prospects/lookup/conversations")) return jsonResponse({ lead_email: "ada@example.com", clients: [] });
       return jsonResponse({ data: {} });
     });
+    return { mock, entries };
   }
 
+  const LANDED = { added: 1, duplicates: [], validationErrors: [], entries: [] };
+  const BAD_URL = { added: 0, duplicates: [], validationErrors: ["'not-a-url' is not a valid profile URL."], entries: [] };
+
+  function heyreachDetail(result: Awaited<ReturnType<typeof suppressInterestedLead>>) {
+    return result.outcomes.find((outcome) => outcome.platform === "heyreach campaigns + blacklist")?.detail;
+  }
+
+  //One identifier per entry: an invalid URL would sink a good email sent beside it, and only an email costs credit.
+  test("blacklists by profile URL alone when the lead has one", async () => {
+    const { mock, entries } = heyreachOnlyMock(() => jsonResponse(LANDED));
+    try {
+      const result = await suppressInterestedLead(targets);
+      expect(entries).toEqual([{ profileUrl: targets.profileUrl }]);
+      expect(heyreachDetail(result)).toContain("blacklisted by profile URL");
+    } finally {
+      mock.restore();
+    }
+  });
+
   //StopLeadInCampaign needs the URL, but the blacklist takes an email, so an email-only lead is no longer skipped.
-  test("blacklists an email-only lead in HeyReach", async () => {
-    const sent: string[] = [];
-    const mock = heyreachOnlyMock((url) => {
-      sent.push(url);
-      return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
-    });
+  test("blacklists an email-only lead by email", async () => {
+    const { mock, entries } = heyreachOnlyMock(() => jsonResponse(LANDED));
     try {
       const result = await suppressInterestedLead({ ...targets, profileUrl: null });
-      const heyreach = result.outcomes.find((outcome) => outcome.platform === "heyreach campaigns + blacklist");
-      expect(heyreach?.status).toBe("suppressed");
-      expect(sent.some((url) => url.includes("/blacklist/AddLeads"))).toBe(true);
+      expect(entries).toEqual([{ email: "ada@example.com" }]);
+      expect(heyreachDetail(result)).toContain("blacklisted by email");
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("falls back to the email when HeyReach rejects the profile URL", async () => {
+    const { mock, entries } = heyreachOnlyMock((entry) => jsonResponse(entry.profileUrl ? BAD_URL : LANDED));
+    try {
+      const result = await suppressInterestedLead(targets);
+      expect(entries).toEqual([{ profileUrl: targets.profileUrl }, { email: "ada@example.com" }]);
+      expect(result.failures).toEqual([]);
+      expect(heyreachDetail(result)).toContain("blacklisted by email");
     } finally {
       mock.restore();
     }
   });
 
   test("says the HeyReach blacklist is full when it is", async () => {
-    const mock = heyreachOnlyMock(() =>
+    const { mock, entries } = heyreachOnlyMock(() =>
       jsonResponse({ error: { message: "Your blacklist is full - 1000 of 1000 leads used. Remove some entries to add more." } }, 400),
     );
     try {
       const result = await suppressInterestedLead(targets);
       expect(result.failures).toHaveLength(1);
       expect(result.failures[0]).toContain("HeyReach lead blacklist is full");
+      //A full list refuses everything, so the email is not tried after the URL.
+      expect(entries).toHaveLength(1);
     } finally {
       mock.restore();
     }
   });
 
   //HeyReach answers 200 even when it skipped the entry, so the reason has to be read from the body.
-  test("says why HeyReach rejected a blacklist entry", async () => {
-    const mock = heyreachOnlyMock(() =>
-      jsonResponse({ added: 0, duplicates: [], validationErrors: ["'not-a-url' is not a valid profile URL."], entries: [] }),
-    );
+  test("says why HeyReach rejected the lead when no identifier lands", async () => {
+    const { mock } = heyreachOnlyMock(() => jsonResponse(BAD_URL));
     try {
-      const result = await suppressInterestedLead(targets);
+      const result = await suppressInterestedLead({ ...targets, email: null });
       expect(result.failures).toHaveLength(1);
       expect(result.failures[0]).toContain("HeyReach rejected the lead for its blacklist: 'not-a-url' is not a valid profile URL.");
     } finally {
