@@ -327,8 +327,9 @@ liveTest("the Interested deal stage exists", async () => {
 });
 
 //---------------------------------------------------------------------------------------------------------
-//Suppression reaches two provider endpoints that nothing else in the codebase touches, so a key scoped only
-//for reading campaigns and emails passes every check above and still cannot suppress anybody.
+//Suppression reaches three provider endpoints that nothing else in the codebase touches - Outfound's DNC list,
+//Instantly's blocklist and HeyReach's blacklist - so a key scoped only for reading campaigns and emails passes
+//every check above and still cannot suppress anybody.
 //Reads only. Whether a WRITE is permitted cannot be proven without making one, and a blocklist entry is not
 //something a smoke test should leave behind.
 //---------------------------------------------------------------------------------------------------------

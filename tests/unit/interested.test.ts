@@ -607,28 +607,6 @@ describe("suppressing an interested lead", () => {
     }
   });
 
-  //The whole company domain is blocked, so no colleague is emailed either - but never a free provider's domain.
-  test("blocks the lead's company domain in Instantly, but only the address for a free provider", async () => {
-    const blocked: string[] = [];
-    const mock = installFetchMock((url, init) => {
-      if (url.includes("block-lists-entries")) {
-        blocked.push(JSON.parse(String(init?.body)).bl_value);
-        return jsonResponse({ data: {} });
-      }
-      if (url.includes("/blacklist/")) return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
-      if (url.includes("GetCampaignsForLead")) return jsonResponse({ items: [] });
-      if (url.includes("/prospects/lookup/conversations")) return jsonResponse({ lead_email: "x", clients: [] });
-      return jsonResponse({ data: {} });
-    });
-    try {
-      await suppressInterestedLead({ ...targets, email: "Ada@Engines.co.uk" });
-      await suppressInterestedLead({ ...targets, email: "ada@gmail.com" });
-      expect(blocked).toEqual(["engines.co.uk", "ada@gmail.com"]);
-    } finally {
-      mock.restore();
-    }
-  });
-
   //Only HeyReach is looked at here; the other channels are answered so they do not throw.
   function heyreachOnlyMock(blacklist: (url: string) => Response) {
     return installFetchMock((url) => {

@@ -15,7 +15,7 @@
 //=============================================================================================================
 //#region <import statements>
 
-import { blockInstantlyLead, emailDomain, FREE_EMAIL_DOMAINS } from "./instantly.js"; //block an email or domain in instantly
+import { blockInstantlyLead } from "./instantly.js"; //add an email to instantly's blocklist
 import { //pull a lead out of heyreach campaigns and blacklist them
   blacklistHeyReachCompany,
   blacklistHeyReachLead,
@@ -209,20 +209,12 @@ export const PROVIDERS: readonly Provider[] = Object.keys(SOURCES) as Provider[]
 export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [ //the outbound platforms, in priority order
   {
     platform: "instantly blocklist", //name for logs
-    suppress: async (targets) => { //blocks the lead's company domain in instantly
+    suppress: async (targets) => { //blocks the lead's email in instantly
       if (!targets.email) { //no email to block
         return { status: "skipped", reason: "the lead carried no email address to block" }; //skip, say why
       }
-      //The whole domain, so no colleague at the same company is emailed either. A free provider such as
-      //gmail.com is shared by strangers, so for those - and for an address with no readable domain - only the
-      //address itself is blocked.
-      const domain = emailDomain(targets.email); //the part after the @
-      if (!domain || FREE_EMAIL_DOMAINS.has(domain)) { //no company domain to block
-        await blockInstantlyLead(targets.email); //add just the address to the blocklist
-        return { status: "suppressed", detail: `blocked the address ${targets.email}` }; //done, say what
-      }
-      await blockInstantlyLead(domain); //add the whole domain to the blocklist
-      return { status: "suppressed", detail: `blocked the domain ${domain}` }; //done, say what
+      await blockInstantlyLead(targets.email); //add the email to the blocklist
+      return { status: "suppressed" }; //done
     },
   },
   {

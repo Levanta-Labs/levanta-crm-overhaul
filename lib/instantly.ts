@@ -120,13 +120,6 @@ const NAMED_ENTITIES: Record<string, string> = {
 //---------------------------------------------------------------------------------------------------------
 export const INSTANTLY_SYNC_PAGE_LIMIT = 15; //most pages one sync run reads
 
-//Email providers shared by strangers. Blocking one of these as a domain would block every lead who uses it, so
-//an address here is blocked on its own instead. Extend it when a new free provider turns up in the lead data.
-export const FREE_EMAIL_DOMAINS: ReadonlySet<string> = new Set([ //domains never blocked whole
-  "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com", "msn.com",
-  "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "mail.com", "zoho.com",
-]);
-
 //#endregion
 //=============================================================================================================
 
@@ -520,16 +513,15 @@ function describeInstantlyLead(lead: InstantlyLead): string {
 
 //#region <blocklist>
 //---------------------------------------------------------------------------------------------------------
-//Adds an address or a whole domain to the workspace blocklist, so no campaign can mail it again.
-//Input: value - the address ("ada@acme.com") or the domain ("acme.com") to block.
+//Adds an address to the workspace blocklist, so no campaign can mail it again.
+//Input: value - the address to block.
 //Output: nothing. Throws if Instantly refuses.
 //Uses: instantlyFetch (this file); errorMessage (lib/json.ts).
 //Workflow: interested workflow (recordInterestedLead) step 6 - the "instantly blocklist" channel
 //(lib/providers.ts) of suppressInterestedLead (lib/interested.ts).
 //
 //Runs for every interested lead whatever platform reported the interest. A lead who said yes on the phone must
-//stop receiving cold email. Instantly's bl_value takes "the email or domain to block"; a domain entry is stored
-//with is_domain true and blocks every address at it.
+//stop receiving cold email.
 //[STABILITY] The caller does not check whether the address is already blocked, and whether Instantly treats a
 //re-block as success or as an error is NOT verified. It does not need to be: suppression collects failures
 //rather than raising them, so the worst case is one logged failure on an address that was already suppressed.
@@ -538,27 +530,13 @@ export async function blockInstantlyLead(value: string): Promise<void> {
   try {
     await instantlyFetch("/block-lists-entries", { //add a blocklist entry
       method: "POST", //create the entry
-      body: JSON.stringify({ bl_value: value }), //the address or domain to block
+      body: JSON.stringify({ bl_value: value }), //the address to block
     });
     console.log(`[action] instantly blocklist: added ${value}`); //log the success
   } catch (error) {
     console.error(`[action] FAILED - instantly blocklist could not add ${value}: ${errorMessage(error)}`); //log the failure
     throw error; //let the caller record it
   }
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Gets the domain from an email address.
-//Input: email - an address such as "Ada@Acme.com".
-//Output: the domain in lowercase ("acme.com"), or null if the address has no "@" or nothing after it.
-//Workflow: the "instantly blocklist" channel (lib/providers.ts), to block the lead's whole company.
-//---------------------------------------------------------------------------------------------------------
-export function emailDomain(email: string): string | null {
-  const atIndex = email.lastIndexOf("@"); //position of the last @
-  if (atIndex === -1) return null; //no @, not an address
-  const domain = email.slice(atIndex + 1).trim().toLowerCase(); //everything after the @
-  if (domain === "") return null; //nothing after the @
-  return domain; //the domain
 }
 //#endregion
 

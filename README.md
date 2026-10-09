@@ -251,7 +251,7 @@ report first is how a lead ends up pitched twice. So every interested event, wha
 | Channel | Action | Needs |
 | --- | --- | --- |
 | Attio | Add the Person to the DNC list | the Person |
-| Instantly | Add the lead's email domain to the workspace blocklist, or just the address when the domain is a free provider such as gmail.com | an email address |
+| Instantly | Add the address to the workspace blocklist | an email address |
 | Outfound | Mark the address do-not-contact, which Outfound then syncs down to the sending platform | an email address Outfound holds a thread for |
 | HeyReach | Stop the lead in every campaign still able to message them, then add the lead and their company to the workspace blacklist | a LinkedIn profile URL or an email address; the company name for the company entry |
 
@@ -260,10 +260,8 @@ Outfound is keyed on a thread rather than an address, because it has no "block t
 the lead up first, and an address Outfound holds no thread for reports itself as skipped. It marks the address,
 never the domain: a domain-wide block would suppress every colleague of the person who just showed interest.
 
-Instantly and HeyReach are the deliberate exceptions. Instantly blocks the lead's whole email domain, so no
-colleague is emailed once someone there has shown interest; a free provider (`FREE_EMAIL_DOMAINS` in
-`lib/instantly.ts`) is shared by strangers, so for those only the address is blocked. HeyReach blacklists the
-lead's company by name as well, so no colleague is pitched over LinkedIn either. In HeyReach, the campaigns are stopped before the
+HeyReach is the one deliberate exception. Its channel blacklists the lead's company by name as well, so no
+colleague is pitched over LinkedIn once someone there has shown interest. The campaigns are stopped before the
 blacklist is written, because a full blacklist (1,000 leads and 1,000 companies per workspace by default)
 throws, and that must not leave the lead in a live sequence. The error says which list is full or why HeyReach
 rejected the entry. Whether HeyReach found the person behind a lead entry is not known at write time - it
@@ -807,8 +805,8 @@ The unit suite mocks every external write and covers provider response validatio
 event identity, Attio helpers, and Supabase cursor persistence. The shared interested workflow is covered
 separately in `tests/unit/interested.test.ts`: the attribute transforms at each bucket boundary, the never-overwrite
 rule and the Lead Source exception to it, the multiselect merge and the cases where it declines to write, the strict deal naming, and suppression
-continuing across platforms after one of them fails, Instantly blocking the company domain (but only the address for a free
-provider), and HeyReach blacklisting an email-only lead and naming a full or refused blacklist.
+continuing across platforms after one of them fails, and HeyReach blacklisting an email-only lead and naming a
+full or refused blacklist.
 
 Run opt-in, read-only smoke tests against configured live accounts:
 
