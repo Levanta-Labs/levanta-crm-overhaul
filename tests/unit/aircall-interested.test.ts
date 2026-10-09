@@ -37,7 +37,7 @@ afterEach(() => {
   delete (globalThis as Record<symbol, unknown>)[REQUEST_CONTEXT];
 });
 
-const CONNECTED = "019fd21c-5b09-70fc-9356-cfd01be98477";
+const FOLLOW_UP = "019fd21c-9a1a-7fa9-b785-918b7da1d00e";
 const NO_ANSWER = "019fd21b-f18f-7216-9926-7322e3b36f14";
 const CAMPAIGN = "019ffb76-4aaa-762f-85e0-056e3a13729c";
 
@@ -110,7 +110,7 @@ describe("aircall-interested route", () => {
       throw new Error(`Unexpected fetch: ${url}`);
     });
     try {
-      const response = await aircallInterested(webhookRequest(outcomeWebhook(CONNECTED, "Connected", "wrong")));
+      const response = await aircallInterested(webhookRequest(outcomeWebhook(FOLLOW_UP, "Follow Up", "wrong")));
       expect(response.status).toBe(401);
       expect(mock.calls).toHaveLength(0);
       expect(backgroundJobs).toHaveLength(0);
@@ -147,7 +147,7 @@ describe("aircall-interested route", () => {
       expect(await other.json()).toMatchObject({ ignored: true, reason: "not an outcome event" });
 
       const incomplete = await aircallInterested(
-        webhookRequest({ event: "outbound_campaign.outcome_recorded", token: "hook-token", data: { outcome_id: CONNECTED } }),
+        webhookRequest({ event: "outbound_campaign.outcome_recorded", token: "hook-token", data: { outcome_id: FOLLOW_UP } }),
       );
       expect(incomplete.status).toBe(200);
       expect(await incomplete.json()).toMatchObject({ ignored: true });
@@ -160,7 +160,7 @@ describe("aircall-interested route", () => {
   test("replies before the work, then records the lead in the background", async () => {
     const mock = mockAircallAndAttio();
     try {
-      const response = await aircallInterested(webhookRequest(outcomeWebhook(CONNECTED, "Connected")));
+      const response = await aircallInterested(webhookRequest(outcomeWebhook(FOLLOW_UP, "Follow Up")));
       //The reply is ready before any request has gone out - that is the whole point of waitUntil.
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ accepted: true, callId: 4223079424 });
@@ -174,7 +174,7 @@ describe("aircall-interested route", () => {
       expect(mock.calls.some((call) => call.input.includes("objects/deals/records"))).toBe(true);
       const notes = historyNoteCalls(mock.calls);
       expect(notes).toHaveLength(2);
-      expect(String(notes[0]?.init?.body)).toContain("Outcome: Connected");
+      expect(String(notes[0]?.init?.body)).toContain("Outcome: Follow Up");
       expect(mock.calls.some((call) => call.input.includes("/lists/dnc/entries"))).toBe(true);
     } finally {
       mock.restore();
@@ -187,7 +187,7 @@ describe("aircall-interested route", () => {
     console.error = (...args: unknown[]) => void errors.push(args.map(String).join(" "));
     const mock = installFetchMock(() => jsonResponse({ message: "boom" }, 500));
     try {
-      const response = await aircallInterested(webhookRequest(outcomeWebhook(CONNECTED, "Connected")));
+      const response = await aircallInterested(webhookRequest(outcomeWebhook(FOLLOW_UP, "Follow Up")));
       expect(response.status).toBe(200);
       //Resolves rather than rejects: an error escaping a background job would have nothing left to catch it.
       await expect(Promise.all(backgroundJobs)).resolves.toBeDefined();

@@ -327,8 +327,9 @@ liveTest("the Interested deal stage exists", async () => {
 });
 
 //---------------------------------------------------------------------------------------------------------
-//Suppression reaches two provider endpoints that nothing else in the codebase touches, so a key scoped only
-//for reading campaigns and emails passes every check above and still cannot suppress anybody.
+//Suppression reaches three provider endpoints that nothing else in the codebase touches - Outfound's DNC list,
+//Instantly's blocklist and HeyReach's blacklist - so a key scoped only for reading campaigns and emails passes
+//every check above and still cannot suppress anybody.
 //Reads only. Whether a WRITE is permitted cannot be proven without making one, and a blocklist entry is not
 //something a smoke test should leave behind.
 //---------------------------------------------------------------------------------------------------------
@@ -466,6 +467,22 @@ liveTest("the Instantly blocklist is readable, so suppression has somewhere to w
       headers: { Authorization: instantlyAuthHeader() },
     }),
   );
+});
+
+//The read half of HeyReach's lead blacklist, which suppression writes the lead to. As with the blocklists
+//above, whether the WRITE is permitted cannot be proven without making one.
+//The list holds 1,000 leads by default, and a full one fails suppression, so the count is printed - the count
+//only, never the entries - to show how close the workspace is before it gets there.
+liveTest("the HeyReach blacklist is readable, so suppression has somewhere to write", async () => {
+  const response = await fetch(`${HEYREACH_BASE}/blacklist/GetLeads`, {
+    method: "POST",
+    headers: heyreachHeaders(),
+    body: JSON.stringify({ offset: 0, limit: 1 }),
+  });
+  await expectOk("HeyReach blacklist", response);
+  const body = await responseJson(response);
+  if (!isJsonObject(body)) throw new Error("HeyReach blacklist returned no object");
+  console.log(`[live] HeyReach blacklist: ${String(body.totalCount)} lead(s) (default limit 1,000)`);
 });
 
 liveTest("the Instantly lead record is readable, so an interested lead can be enriched", async () => {

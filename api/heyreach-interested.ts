@@ -125,8 +125,8 @@ const HISTORY_UNAVAILABLE = //note text when HeyReach throttled the read
 //INTERESTED_DUPLICATE_WINDOW_MS - but a retry landing after that window, or one arriving while the note
 //listing cannot be read, is still recorded a second time. The check narrows this; it does not remove it.
 //Ending HeyReach sequencing is no longer done here: it is one channel of suppressInterestedLead, which runs
-//for every interested lead whatever platform reported it. Its known gap - a lead with no profile URL cannot be
-//stopped, because StopLeadInCampaign is driven by leadUrl - now reports itself as a skipped channel.
+//for every interested lead whatever platform reported it. A lead with no profile URL cannot be stopped in a
+//campaign, because StopLeadInCampaign is driven by leadUrl, so that channel blacklists them by email instead.
 //---------------------------------------------------------------------------------------------------------
 export async function POST(request: Request): Promise<Response> {
   if (!hasWebhookSecret(request, "HEYREACH_WEBHOOK_SECRET")) { //step 1: wrong or missing secret

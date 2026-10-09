@@ -106,10 +106,13 @@ describe("interested workflows", () => {
     expect(parseAircallOutcomeWebhook({ event: "outbound_campaign.outcome_recorded", token: "xxx", data: {} }).outcome).toBeNull();
   });
 
-  test("counts Booked, Connected and Referral as interested, and nothing else", () => {
+  test("counts Booked, Follow Up and More Info as interested, and nothing else", () => {
     expect(isInterestedOutcome("019fd21c-357f-7c2a-b061-3b8b04a0146e")).toBe(true); //Booked
-    expect(isInterestedOutcome("019fd21c-5b09-70fc-9356-cfd01be98477")).toBe(true); //Connected
-    expect(isInterestedOutcome("019fd77c-37b0-7a87-9565-47e77576c25b")).toBe(true); //Referral
+    expect(isInterestedOutcome("019fd21c-9a1a-7fa9-b785-918b7da1d00e")).toBe(true); //Follow Up
+    expect(isInterestedOutcome("01a12122-77f5-7f67-b736-82b693ff6d22")).toBe(true); //More Info
+    //Interested until 2026-10-09; no longer.
+    expect(isInterestedOutcome("019fd21c-5b09-70fc-9356-cfd01be98477")).toBe(false); //Connected
+    expect(isInterestedOutcome("019fd77c-37b0-7a87-9565-47e77576c25b")).toBe(false); //Referral
     expect(isInterestedOutcome("019fd21b-f18f-7216-9926-7322e3b36f14")).toBe(false); //No Answer
     expect(isInterestedOutcome("019fd21d-1933-75d6-b20c-fb27dcd3caaf")).toBe(false); //Not Interested
   });

@@ -16,7 +16,7 @@
 //#region <import statements>
 
 import { blockInstantlyLead } from "./instantly.js"; //add an email to instantly's blocklist
-import { stopLeadInActiveCampaigns } from "./heyreach.js"; //pull a lead out of heyreach campaigns
+import { blacklistHeyReachLead, stopLeadInActiveCampaigns } from "./heyreach.js"; //pull a lead out of heyreach campaigns and blacklist them
 import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js"; //find and mark outfound threads
 
 //#endregion
@@ -231,22 +231,24 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
     },
   },
   {
-    platform: "heyreach campaigns", //name for logs
-    suppress: async (targets) => { //removes the lead from live heyreach campaigns
-      if (!targets.profileUrl) { //no linkedin url to stop
-        //StopLeadInCampaign is driven by leadUrl, so an email-only lead cannot be stopped even though the
-        //campaign lookup would accept the address. Closing this needs the leadMemberId - see lib/heyreach.ts.
-        return { status: "skipped", reason: "the lead carried no LinkedIn profile URL to stop" }; //skip, say why
+    platform: "heyreach campaigns + blacklist", //name for logs
+    suppress: async (targets) => { //stops the lead in heyreach and blacklists them
+      if (!targets.profileUrl && !targets.email) { //nothing to identify the lead by
+        return { status: "skipped", reason: "the lead carried no LinkedIn profile URL or email address" }; //skip, say why
       }
+      //Campaigns first: a full blacklist throws, and that must not stop the live sequences being withdrawn.
+      //An email-only lead gets zeroes here, because StopLeadInCampaign needs the URL; the blacklist covers them.
       const { inCampaigns, removedFrom } = await stopLeadInActiveCampaigns( //remove from every live campaign
         targets.profileUrl,
         targets.email,
       );
-      //Both numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had been
-      //left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
-      return { //done, with both counts
+      const blacklistedBy = await blacklistHeyReachLead(targets.profileUrl, targets.email); //block the lead workspace-wide
+      //Both campaign numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had
+      //been left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
+      //"still matching" because HeyReach finds the person behind a blacklist entry in the background.
+      return { //done, with every part
         status: "suppressed", //lead was stopped
-        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}`, //counts for the log
+        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted by ${blacklistedBy} (still matching)`, //for the log
       };
     },
   },
