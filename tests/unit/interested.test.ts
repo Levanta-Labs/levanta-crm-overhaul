@@ -521,6 +521,7 @@ describe("suppressing an interested lead", () => {
     personName: "Ada Lovelace",
     email: "ada@example.com",
     profileUrl: "https://www.linkedin.com/in/ada",
+    companyName: "Engines Ltd",
   };
 
   test("suppresses on every platform, not only the one that reported the interest", async () => {
@@ -531,6 +532,7 @@ describe("suppressing an interested lead", () => {
         return jsonResponse({ items: [{ campaignId: 7, campaignStatus: "IN_PROGRESS", leadStatus: "InSequence" }] });
       }
       if (url.includes("StopLeadInCampaign")) return jsonResponse({});
+      if (url.includes("/blacklist/")) return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
       //Outfound has no "block this address" call, so the channel looks the lead up for a thread first.
       if (url.includes("/prospects/lookup/conversations")) {
         return jsonResponse({
@@ -548,7 +550,7 @@ describe("suppressing an interested lead", () => {
         ["attio DNC list", "suppressed"],
         ["instantly blocklist", "suppressed"],
         ["outfound DNC", "suppressed"],
-        ["heyreach campaigns", "suppressed"],
+        ["heyreach campaigns + blacklist", "suppressed"],
       ]);
     } finally {
       mock.restore();
@@ -561,6 +563,7 @@ describe("suppressing an interested lead", () => {
       if (url.includes("/lists/dnc/entries")) return jsonResponse({ data: {} });
       if (url.includes("block-lists-entries")) return jsonResponse({ error: "boom" }, 500);
       if (url.includes("GetCampaignsForLead")) return jsonResponse({ items: [] });
+      if (url.includes("/blacklist/")) return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
       if (url.includes("/prospects/lookup/conversations")) {
         return jsonResponse({
           lead_email: "ada@example.com",
@@ -599,6 +602,86 @@ describe("suppressing an interested lead", () => {
         "skipped",
         "skipped",
       ]);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  //The whole company domain is blocked, so no colleague is emailed either - but never a free provider's domain.
+  test("blocks the lead's company domain in Instantly, but only the address for a free provider", async () => {
+    const blocked: string[] = [];
+    const mock = installFetchMock((url, init) => {
+      if (url.includes("block-lists-entries")) {
+        blocked.push(JSON.parse(String(init?.body)).bl_value);
+        return jsonResponse({ data: {} });
+      }
+      if (url.includes("/blacklist/")) return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
+      if (url.includes("GetCampaignsForLead")) return jsonResponse({ items: [] });
+      if (url.includes("/prospects/lookup/conversations")) return jsonResponse({ lead_email: "x", clients: [] });
+      return jsonResponse({ data: {} });
+    });
+    try {
+      await suppressInterestedLead({ ...targets, email: "Ada@Engines.co.uk" });
+      await suppressInterestedLead({ ...targets, email: "ada@gmail.com" });
+      expect(blocked).toEqual(["engines.co.uk", "ada@gmail.com"]);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  //Only HeyReach is looked at here; the other channels are answered so they do not throw.
+  function heyreachOnlyMock(blacklist: (url: string) => Response) {
+    return installFetchMock((url) => {
+      if (url.includes("/blacklist/")) return blacklist(url);
+      if (url.includes("GetCampaignsForLead")) return jsonResponse({ items: [] });
+      if (url.includes("/prospects/lookup/conversations")) return jsonResponse({ lead_email: "ada@example.com", clients: [] });
+      return jsonResponse({ data: {} });
+    });
+  }
+
+  //StopLeadInCampaign needs the URL, but the blacklist takes an email, so an email-only lead is no longer skipped.
+  test("blacklists an email-only lead and their company in HeyReach", async () => {
+    const sent: string[] = [];
+    const mock = heyreachOnlyMock((url) => {
+      sent.push(url);
+      return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
+    });
+    try {
+      const result = await suppressInterestedLead({ ...targets, profileUrl: null });
+      const heyreach = result.outcomes.find((outcome) => outcome.platform === "heyreach campaigns + blacklist");
+      expect(heyreach?.status).toBe("suppressed");
+      expect(sent.some((url) => url.includes("/blacklist/AddLeads"))).toBe(true);
+      expect(sent.some((url) => url.includes("/blacklist/AddCompanies"))).toBe(true);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("says the HeyReach blacklist is full when it is", async () => {
+    const mock = heyreachOnlyMock(() =>
+      jsonResponse({ error: { message: "Your blacklist is full - 1000 of 1000 leads used. Remove some entries to add more." } }, 400),
+    );
+    try {
+      const result = await suppressInterestedLead(targets);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toContain("HeyReach lead blacklist is full");
+    } finally {
+      mock.restore();
+    }
+  });
+
+  //HeyReach answers 200 even when it skipped the entry, so the reason has to be read from the body.
+  test("says why HeyReach rejected a blacklist entry", async () => {
+    const mock = heyreachOnlyMock((url) => {
+      if (url.includes("AddCompanies")) {
+        return jsonResponse({ added: 0, duplicates: [], validationErrors: ["Entry has no identifier."], entries: [] });
+      }
+      return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
+    });
+    try {
+      const result = await suppressInterestedLead(targets);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toContain("HeyReach rejected the company for its blacklist: Entry has no identifier.");
     } finally {
       mock.restore();
     }

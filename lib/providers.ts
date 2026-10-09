@@ -15,8 +15,12 @@
 //=============================================================================================================
 //#region <import statements>
 
-import { blockInstantlyLead } from "./instantly.js"; //add an email to instantly's blocklist
-import { stopLeadInActiveCampaigns } from "./heyreach.js"; //pull a lead out of heyreach campaigns
+import { blockInstantlyLead, emailDomain, FREE_EMAIL_DOMAINS } from "./instantly.js"; //block an email or domain in instantly
+import { //pull a lead out of heyreach campaigns and blacklist them
+  blacklistHeyReachCompany,
+  blacklistHeyReachLead,
+  stopLeadInActiveCampaigns,
+} from "./heyreach.js";
 import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js"; //find and mark outfound threads
 
 //#endregion
@@ -59,6 +63,7 @@ export interface SuppressionTargets {
   readonly email: string | null; //lead's email, if known
   //A LinkedIn profile URL, whichever provider happened to supply it.
   readonly profileUrl: string | null; //linkedin profile url, if known
+  readonly companyName: string | null; //lead's company name, if known
 }
 
 //What one suppression channel reports back: done, or nothing to do.
@@ -204,12 +209,20 @@ export const PROVIDERS: readonly Provider[] = Object.keys(SOURCES) as Provider[]
 export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [ //the outbound platforms, in priority order
   {
     platform: "instantly blocklist", //name for logs
-    suppress: async (targets) => { //blocks the lead's email in instantly
+    suppress: async (targets) => { //blocks the lead's company domain in instantly
       if (!targets.email) { //no email to block
         return { status: "skipped", reason: "the lead carried no email address to block" }; //skip, say why
       }
-      await blockInstantlyLead(targets.email); //add the email to the blocklist
-      return { status: "suppressed" }; //done
+      //The whole domain, so no colleague at the same company is emailed either. A free provider such as
+      //gmail.com is shared by strangers, so for those - and for an address with no readable domain - only the
+      //address itself is blocked.
+      const domain = emailDomain(targets.email); //the part after the @
+      if (!domain || FREE_EMAIL_DOMAINS.has(domain)) { //no company domain to block
+        await blockInstantlyLead(targets.email); //add just the address to the blocklist
+        return { status: "suppressed", detail: `blocked the address ${targets.email}` }; //done, say what
+      }
+      await blockInstantlyLead(domain); //add the whole domain to the blocklist
+      return { status: "suppressed", detail: `blocked the domain ${domain}` }; //done, say what
     },
   },
   {
@@ -231,22 +244,29 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
     },
   },
   {
-    platform: "heyreach campaigns", //name for logs
-    suppress: async (targets) => { //removes the lead from live heyreach campaigns
-      if (!targets.profileUrl) { //no linkedin url to stop
-        //StopLeadInCampaign is driven by leadUrl, so an email-only lead cannot be stopped even though the
-        //campaign lookup would accept the address. Closing this needs the leadMemberId - see lib/heyreach.ts.
-        return { status: "skipped", reason: "the lead carried no LinkedIn profile URL to stop" }; //skip, say why
+    platform: "heyreach campaigns + blacklist", //name for logs
+    suppress: async (targets) => { //stops the lead in heyreach and blacklists them and their company
+      if (!targets.profileUrl && !targets.email) { //nothing to identify the lead by
+        return { status: "skipped", reason: "the lead carried no LinkedIn profile URL or email address" }; //skip, say why
       }
+      //Campaigns first: a full blacklist throws, and that must not stop the live sequences being withdrawn.
+      //An email-only lead gets zeroes here, because StopLeadInCampaign needs the URL; the blacklist covers them.
       const { inCampaigns, removedFrom } = await stopLeadInActiveCampaigns( //remove from every live campaign
         targets.profileUrl,
         targets.email,
       );
-      //Both numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had been
-      //left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
-      return { //done, with both counts
+      await blacklistHeyReachLead(targets.profileUrl, targets.email); //block the lead workspace-wide
+      //The whole company, so no colleague is pitched over LinkedIn either. By name only - see lib/heyreach.ts.
+      if (targets.companyName) { //company known
+        await blacklistHeyReachCompany(targets.companyName); //block the company workspace-wide
+      }
+      //Both campaign numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had
+      //been left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
+      //"still matching" because HeyReach finds the person behind a blacklist entry in the background.
+      const companyDetail = targets.companyName ? `company "${targets.companyName}" blacklisted` : "no company to blacklist"; //company part of the log
+      return { //done, with every part
         status: "suppressed", //lead was stopped
-        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}`, //counts for the log
+        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted (still matching); ${companyDetail}`, //for the log
       };
     },
   },

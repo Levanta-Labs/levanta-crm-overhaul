@@ -1249,6 +1249,7 @@ async function runInterestedLead(workflow: InterestedWorkflow): Promise<Interest
     personName, //same as personName: personName
     email: lead.emails[0] ?? null, //first email, if any
     profileUrl: lead.linkedin, //linkedin url, if any
+    companyName: company?.name ?? null, //company name, if any
   });
 
   console.log( //one summary line for the event

@@ -6,6 +6,7 @@ import { rateLimitWaitMs } from "./http.js"; //how long to wait after a 429
 import { //safe readers for unknown json
   arrayValue,
   booleanValue,
+  errorMessage,
   isJsonObject,
   numberValue,
   responseJson,
@@ -211,13 +212,14 @@ function parseCampaign(value: unknown): HeyReachCampaign {
 //
 //HeyReach refuses with 429 once the key's allowance is spent, and the allowance is shared across every
 //endpoint rather than being per-route - so the touchpoint sync's pagination, the interested route's
-//conversation read and the suppression's campaign calls all draw on the same pool.
+//conversation read and the suppression's campaign and blacklist calls all draw on the same pool.
 //
 //[STABILITY] WHY A RETRY AND NOT A SELF-IMPOSED CAP. HeyReach was probed live and answers 200 with no
 //rate-limit header of any kind, so there is no allowance to read ahead and no honest number to pace against.
 //Instantly gets a page cap because its 20-per-minute ceiling is documented as a hard figure; here the
 //transport can only react to the refusal when it arrives. A refused request was not processed, so repeating it
-//cannot apply anything twice - which is what makes this safe on StopLeadInCampaign as well as on the reads.
+//cannot apply anything twice - which is what makes this safe on StopLeadInCampaign and the blacklist writes as
+//well as on the reads.
 
 //#region <requests>
 //---------------------------------------------------------------------------------------------------------
@@ -226,7 +228,8 @@ function parseCampaign(value: unknown): HeyReachCampaign {
 //Output: the parsed JSON body. Throws HeyReachRateLimitError after 3 refusals, Error on any other failure.
 //Uses: heyreachHeaders, credentialHint (lib/endpoints.ts); rateLimitWaitMs (lib/http.ts); responseJson
 //(lib/json.ts).
-//Workflow: every HeyReach request - fetchHeyReachConversationWindow, stopLeadInActiveCampaigns.
+//Workflow: every HeyReach request - fetchHeyReachConversationWindow, stopLeadInActiveCampaigns,
+//addToHeyReachBlacklist.
 //
 //WHY IT EXISTS AT ALL. There were three raw fetch sites here - conversations, GetCampaignsForLead and
 //StopLeadInCampaign - each with its own copy of the status check. A 429 was an ordinary Error at all three,
@@ -404,15 +407,13 @@ export async function heyReachMessageId(
 //Input: profileUrl - the lead's LinkedIn profile URL, or null; email - the lead's email, or null.
 //Output: { inCampaigns, removedFrom } - see CampaignStopResult. Throws if any request fails.
 //Uses: heyreachFetch, parseCampaign (this file).
-//Workflow: interested workflow (recordInterestedLead) step 6 - the "heyreach campaigns" channel
+//Workflow: interested workflow (recordInterestedLead) step 6 - the "heyreach campaigns + blacklist" channel
 //(lib/providers.ts) of suppressInterestedLead (lib/interested.ts).
 //
-//The only provider-side write in the codebase. Scoped to the one lead: StopLeadInCampaign withdraws them from a
-//campaign, it does not halt the campaign.
+//Scoped to the one lead: StopLeadInCampaign withdraws them from a campaign, it does not halt the campaign.
 //[STABILITY] A failed stop throws and is not retried; the caller has already written the CRM record.
-//KNOWN GAP: a lead with no profile URL gets zeroes, because StopLeadInCampaign is driven by leadUrl, which an
-//email-only lead does not supply. The campaign lookup would accept the email; the stop would not. Such a lead
-//stays in sequence. Closing this needs the leadMemberId from the lookup's response, which parseCampaign discards.
+//A lead with no profile URL gets zeroes, because StopLeadInCampaign is driven by leadUrl, which an email-only
+//lead does not supply. Such a lead is covered by the blacklist instead - see blacklistHeyReachLead.
 //---------------------------------------------------------------------------------------------------------
 export async function stopLeadInActiveCampaigns(
   profileUrl: string | null,
@@ -450,6 +451,70 @@ export async function stopLeadInActiveCampaigns(
     });
   }
   return { inCampaigns: listed.length, removedFrom: campaigns.length }; //both counts
+}
+//#endregion
+
+//#region <blacklist>
+//---------------------------------------------------------------------------------------------------------
+//Adds a lead to the workspace blacklist, so no HeyReach campaign can contact them again.
+//Input: profileUrl - the lead's LinkedIn profile URL, or null; email - the lead's email, or null.
+//Output: nothing. Throws if the blacklist is full, HeyReach rejects the lead, or the request fails.
+//Uses: addToHeyReachBlacklist (this file).
+//Workflow: interested workflow (recordInterestedLead) step 6 - the "heyreach campaigns + blacklist" channel
+//(lib/providers.ts) of suppressInterestedLead (lib/interested.ts).
+//
+//Covers the email-only lead that stopLeadInActiveCampaigns cannot stop. An email may spend one HeyReach
+//reverse-lookup credit; a profile URL never does.
+//[LOGIC] HeyReach matches the entry to a person in the background, so whether the lead was found is not known
+//here. A lead it never finds shows as "NotFound" on /blacklist/GetLeads later.
+//---------------------------------------------------------------------------------------------------------
+export async function blacklistHeyReachLead(profileUrl: string | null, email: string | null): Promise<void> {
+  if (!profileUrl && !email) {throw new Error("HeyReach blacklist needs a profile URL or an email");}
+  const lead: Record<string, string> = {}; //only the identifiers we have
+  if (profileUrl) lead.profileUrl = profileUrl; //add the url, if known
+  if (email) lead.email = email; //add the email, if known
+  await addToHeyReachBlacklist("/blacklist/AddLeads", { leads: [lead] }, "lead"); //send it
+}
+
+//---------------------------------------------------------------------------------------------------------
+//Adds a company to the workspace blacklist, so no HeyReach campaign contacts anyone working there.
+//Input: companyName - the company's name as Attio holds it.
+//Output: nothing. Throws if the blacklist is full, HeyReach rejects the company, or the request fails.
+//Uses: addToHeyReachBlacklist (this file).
+//Workflow: same channel as blacklistHeyReachLead.
+//
+//By name only, because Attio gives us no LinkedIn company URL. HeyReach matches it by exact, case-insensitive
+//company name, so a company spelled differently on LinkedIn is not caught.
+//---------------------------------------------------------------------------------------------------------
+export async function blacklistHeyReachCompany(companyName: string): Promise<void> {
+  await addToHeyReachBlacklist("/blacklist/AddCompanies", { companies: [{ name: companyName }] }, "company"); //send it
+}
+
+//---------------------------------------------------------------------------------------------------------
+//Sends one blacklist entry and turns HeyReach's two ways of refusing it into a clear error.
+//Input: path - AddLeads or AddCompanies; body - the request body; kind - "lead" or "company", for messages.
+//Output: nothing. Throws if the blacklist is full, the entry was rejected, or the request fails.
+//Uses: heyreachFetch (this file); errorMessage, isJsonObject, arrayValue (lib/json.ts).
+//
+//[LOGIC] A full blacklist arrives as a 400, which heyreachFetch throws with HeyReach's own text inside it.
+//A rejected entry arrives as a 200 with the reason in validationErrors - the status alone says nothing.
+//---------------------------------------------------------------------------------------------------------
+async function addToHeyReachBlacklist(path: string, body: unknown, kind: "lead" | "company"): Promise<void> {
+  let response: unknown; //heyreach's reply
+  try {
+    response = await heyreachFetch(path, body); //send the entry
+  } catch (error) {
+    const message = errorMessage(error); //the error text
+    if (message.includes("blacklist is full")) { //workspace limit reached
+      throw new Error(`HeyReach ${kind} blacklist is full, ${kind} not added: ${message}`); //say so plainly
+    }
+    throw error; //any other failure, pass it on
+  }
+  if (!isJsonObject(response)) {throw new Error(`HeyReach ${kind} blacklist response is invalid`);}
+  const rejected = arrayValue(response, "validationErrors"); //entries heyreach skipped
+  if (rejected.length > 0) { //the entry did not land
+    throw new Error(`HeyReach rejected the ${kind} for its blacklist: ${rejected.join("; ")}`); //say why
+  }
 }
 //#endregion
 
