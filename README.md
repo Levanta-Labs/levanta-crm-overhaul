@@ -253,18 +253,17 @@ report first is how a lead ends up pitched twice. So every interested event, wha
 | Attio | Add the Person to the DNC list | the Person |
 | Instantly | Add the address to the workspace blocklist | an email address |
 | Outfound | Mark the address do-not-contact, which Outfound then syncs down to the sending platform | an email address Outfound holds a thread for |
-| HeyReach | Stop the lead in every campaign still able to message them, then add the lead and their company to the workspace blacklist | a LinkedIn profile URL or an email address; the company name for the company entry |
+| HeyReach | Stop the lead in every campaign still able to message them, then add the lead to the workspace blacklist | a LinkedIn profile URL or an email address |
 
 Outfound is keyed on a thread rather than an address, because it has no "block this address" endpoint - only
 "mark this thread DNC", with the entry then applying to the address across every thread. So the channel looks
 the lead up first, and an address Outfound holds no thread for reports itself as skipped. It marks the address,
 never the domain: a domain-wide block would suppress every colleague of the person who just showed interest.
 
-HeyReach is the one deliberate exception. Its channel blacklists the lead's company by name as well, so no
-colleague is pitched over LinkedIn once someone there has shown interest. The campaigns are stopped before the
-blacklist is written, because a full blacklist (1,000 leads and 1,000 companies per workspace by default)
-throws, and that must not leave the lead in a live sequence. The error says which list is full or why HeyReach
-rejected the entry. Whether HeyReach found the person behind a lead entry is not known at write time - it
+HeyReach stops the lead in campaigns before blacklisting them, because a full blacklist (1,000 leads per
+workspace by default) throws, and that must not leave the lead in a live sequence. The blacklist is what covers
+an email-only lead, since `StopLeadInCampaign` needs a profile URL. The error says whether the list is full or
+why HeyReach rejected the entry. Whether HeyReach found the person behind a lead entry is not known at write time - it
 resolves in the background and shows as `NotFound` on its blacklist page if it never does.
 
 Aircall is absent by design: it needs no suppression of its own. Aircall dialling is governed by the Attio DNC
@@ -513,9 +512,9 @@ still *saves its cursor*. That is what makes the next run different from this on
 what kept the Instantly sync dead for five days. A throttled window fetch reports `stopReason: "window-throttled"`
 and the run is still a 200.
 
-**HeyReach's retry covers writes.** `StopLeadInCampaign` and the blacklist's `AddLeads` and `AddCompanies` are
-HeyReach writes, and they are retried on a 429 for the same reason Attio retries POSTs: a refused request was not
-processed, so repeating it cannot withdraw a lead twice or add an entry twice.
+**HeyReach's retry covers writes.** `StopLeadInCampaign` and the blacklist's `AddLeads` are HeyReach writes, and
+they are retried on a 429 for the same reason Attio retries POSTs: a refused request was not processed, so
+repeating it cannot withdraw a lead twice or add an entry twice.
 
 **The all-or-nothing forms are kept for the interested routes.** `fetchInstantlyEmails` and `fetchHeyReachConversations`
 still raise rather than returning a partial read, because their caller writes one note once
@@ -652,7 +651,7 @@ reads a bounded one. There is now a live test that calls the listing the way the
 Its webhook auth header is one *we* configure - the Webhook Relay lets arbitrary headers be set per endpoint - so
 `x-webhook-secret` is set there by hand rather than being a name Outfound chose.
 
-The HeyReach integration uses `GetConversationsV3` cursor pagination, the current `GetCampaignsForLead` and `StopLeadInCampaign` endpoints, and the blacklist's `AddLeads` and `AddCompanies`.
+The HeyReach integration uses `GetConversationsV3` cursor pagination, the current `GetCampaignsForLead` and `StopLeadInCampaign` endpoints, and the blacklist's `AddLeads`.
 
 HeyReach applies its `from`/`to` filter with **day** granularity, so a five-minute run receives every conversation
 touched since UTC midnight, each with its full message list, and hashes every message before the per-message cursor
@@ -683,7 +682,7 @@ Keep credentials in `.env.local` for local development and configure the same va
 | `INTERESTED_DUPLICATE_WINDOW_MS` | Optional. Milliseconds within which a second interested event for the same Person, from the same provider, is declined instead of recorded; defaults to 900000 (fifteen minutes), and `0` turns the check off. See [Repeated events are declined, not re-recorded](#repeated-events-are-declined-not-re-recorded) |
 | `INSTANTLY_API_KEY` | Instantly v2 API key; needs to read emails and leads, and to write blocklist entries |
 | `INSTANTLY_WEBHOOK_SECRET` | Secret configured as the Instantly `x-webhook-secret` custom header |
-| `HEYREACH_API_KEY` | HeyReach API key; needs to read conversations, to stop leads in campaigns, and to add leads and companies to the blacklist |
+| `HEYREACH_API_KEY` | HeyReach API key; needs to read conversations, to stop leads in campaigns, and to add leads to the blacklist |
 | `HEYREACH_WEBHOOK_SECRET` | Secret configured on the HeyReach webhook as the `x-webhook-secret` custom header |
 | `OUTFOUND_API_KEY` | Outfound client API key, prefix included; needs to read the inbox and prospects, and to write DNC entries |
 | `OUTFOUND_WEBHOOK_SECRET` | Secret configured on the Outfound Webhook Relay as the `x-webhook-secret` custom header |
@@ -771,7 +770,7 @@ Secret values are never logged.
 | `[interested]` | The shared interested workflow's own verdict, for every provider: completed with the person, deal and company it finished with, or declined as a repeat of an event already recorded |
 | `[lookup]` | Each person, company, and deal search and its result, naming the attribute searched and the record matched, plus whether that person is on the Master TAM list. A company line also says when the person was already linked to one, or when neither Attio nor the provider names one and the deal will be named for an unknown company. An Instantly lead lookup names which enrichment fields arrived, by field name only. The deal line reports both outcomes - how many deals the person already had and which is being reused, or that they had none and one is being created - because "checked and found none" and "never checked" must not read alike |
 | `[action]` | Each write and its outcome: person or company created, a record updated with the attribute list, a record left untouched because every target attribute was already populated, deal created, deal reused, note added, blocklist entry added, counter moved from one value to the next. A failure is reported as `[action] FAILED` naming the action and record before the error propagates |
-| `[suppress]` | One line per outbound platform - suppressed, skipped with the identifier it lacked, or `FAILED` with the reason - then a summary naming every platform and its outcome. A failure here is reported, not raised: the Attio record was already written. The HeyReach line carries two figures, how many campaigns the lead is in and how many of those still live ones they were withdrawn from, because no campaign is ever halted and a single count read as though one had been, followed by the lead and company blacklist results |
+| `[suppress]` | One line per outbound platform - suppressed, skipped with the identifier it lacked, or `FAILED` with the reason - then a summary naming every platform and its outcome. A failure here is reported, not raised: the Attio record was already written. The HeyReach line carries two figures, how many campaigns the lead is in and how many of those still live ones they were withdrawn from, because no campaign is ever halted and a single count read as though one had been, followed by the blacklist result |
 | `[attio]` | An attribute was not written and the event continued anyway: a multiselect left alone because its existing entries could not all be read back, so a replacing write would have risked deleting real data; or a value Attio rejected, named individually, with a count of what was written and what was dropped |
 | `[event]` | Why one polled touchpoint was skipped: no phone or lead email on the record, no Attio person matched, or the person is not on the Master TAM list. |
 | `[run]` | One summary per sync: how many records were in the window, how many were processed, skipped, off-TAM, or failed and passed over, and the new cursor. Aircall's `fetched` count includes the two-hour reach-back, so most of it is normally before the cursor. Every sync also states how many records in its window came from before the cursor and were passed over as already counted, so the line accounts for the whole window rather than leaving the shortfall to be inferred; the response bodies carry it as `beforeCursor`. On HeyReach that figure is normally most of the window, because its fetch is day-granular - see the `[PERF]` note in the sync |
@@ -824,8 +823,8 @@ two kinds of failure:
 - **Credentials.** One small page is read from Supabase, Attio, Aircall, Instantly, HeyReach, and Outfound, which
   proves each key is accepted. The Outfound checks also read its DNC list, so the suppression channel is known to
   have somewhere to write, and its `/rate-limit` endpoint, which reports the tier the touchpoint sync is spending
-  one request per thread against. The HeyReach check also reads its lead and company blacklists and prints how
-  many entries each holds, since a full list (1,000 by default) makes suppression fail.
+  one request per thread against. The HeyReach check also reads its lead blacklist and prints how many entries it
+  holds, since a full list (1,000 by default) makes suppression fail.
 - **Schema and configuration.** All eight counter slugs are checked against the live Attio attribute list for the
   people and companies objects, both list slugs against the workspace's lists, and `ATTIO_DEFAULT_DEAL_OWNER`
   against the workspace members. A wrong slug or a renamed list is caught here rather than on the first touchpoint

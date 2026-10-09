@@ -521,7 +521,6 @@ describe("suppressing an interested lead", () => {
     personName: "Ada Lovelace",
     email: "ada@example.com",
     profileUrl: "https://www.linkedin.com/in/ada",
-    companyName: "Engines Ltd",
   };
 
   test("suppresses on every platform, not only the one that reported the interest", async () => {
@@ -618,7 +617,7 @@ describe("suppressing an interested lead", () => {
   }
 
   //StopLeadInCampaign needs the URL, but the blacklist takes an email, so an email-only lead is no longer skipped.
-  test("blacklists an email-only lead and their company in HeyReach", async () => {
+  test("blacklists an email-only lead in HeyReach", async () => {
     const sent: string[] = [];
     const mock = heyreachOnlyMock((url) => {
       sent.push(url);
@@ -629,7 +628,6 @@ describe("suppressing an interested lead", () => {
       const heyreach = result.outcomes.find((outcome) => outcome.platform === "heyreach campaigns + blacklist");
       expect(heyreach?.status).toBe("suppressed");
       expect(sent.some((url) => url.includes("/blacklist/AddLeads"))).toBe(true);
-      expect(sent.some((url) => url.includes("/blacklist/AddCompanies"))).toBe(true);
     } finally {
       mock.restore();
     }
@@ -650,16 +648,13 @@ describe("suppressing an interested lead", () => {
 
   //HeyReach answers 200 even when it skipped the entry, so the reason has to be read from the body.
   test("says why HeyReach rejected a blacklist entry", async () => {
-    const mock = heyreachOnlyMock((url) => {
-      if (url.includes("AddCompanies")) {
-        return jsonResponse({ added: 0, duplicates: [], validationErrors: ["Entry has no identifier."], entries: [] });
-      }
-      return jsonResponse({ added: 1, duplicates: [], validationErrors: [], entries: [] });
-    });
+    const mock = heyreachOnlyMock(() =>
+      jsonResponse({ added: 0, duplicates: [], validationErrors: ["'not-a-url' is not a valid profile URL."], entries: [] }),
+    );
     try {
       const result = await suppressInterestedLead(targets);
       expect(result.failures).toHaveLength(1);
-      expect(result.failures[0]).toContain("HeyReach rejected the company for its blacklist: Entry has no identifier.");
+      expect(result.failures[0]).toContain("HeyReach rejected the lead for its blacklist: 'not-a-url' is not a valid profile URL.");
     } finally {
       mock.restore();
     }

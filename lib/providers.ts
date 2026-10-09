@@ -16,11 +16,7 @@
 //#region <import statements>
 
 import { blockInstantlyLead } from "./instantly.js"; //add an email to instantly's blocklist
-import { //pull a lead out of heyreach campaigns and blacklist them
-  blacklistHeyReachCompany,
-  blacklistHeyReachLead,
-  stopLeadInActiveCampaigns,
-} from "./heyreach.js";
+import { blacklistHeyReachLead, stopLeadInActiveCampaigns } from "./heyreach.js"; //pull a lead out of heyreach campaigns and blacklist them
 import { fetchOutfoundLead, markOutfoundThreadDnc } from "./outfound.js"; //find and mark outfound threads
 
 //#endregion
@@ -63,7 +59,6 @@ export interface SuppressionTargets {
   readonly email: string | null; //lead's email, if known
   //A LinkedIn profile URL, whichever provider happened to supply it.
   readonly profileUrl: string | null; //linkedin profile url, if known
-  readonly companyName: string | null; //lead's company name, if known
 }
 
 //What one suppression channel reports back: done, or nothing to do.
@@ -237,7 +232,7 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
   },
   {
     platform: "heyreach campaigns + blacklist", //name for logs
-    suppress: async (targets) => { //stops the lead in heyreach and blacklists them and their company
+    suppress: async (targets) => { //stops the lead in heyreach and blacklists them
       if (!targets.profileUrl && !targets.email) { //nothing to identify the lead by
         return { status: "skipped", reason: "the lead carried no LinkedIn profile URL or email address" }; //skip, say why
       }
@@ -248,17 +243,12 @@ export const THIRD_PARTY_SUPPRESSION_CHANNELS: readonly SuppressionChannel[] = [
         targets.email,
       );
       await blacklistHeyReachLead(targets.profileUrl, targets.email); //block the lead workspace-wide
-      //The whole company, so no colleague is pitched over LinkedIn either. By name only - see lib/heyreach.ts.
-      if (targets.companyName) { //company known
-        await blacklistHeyReachCompany(targets.companyName); //block the company workspace-wide
-      }
       //Both campaign numbers, because either alone misreads. "0 campaign(s) stopped" sounded like a campaign had
       //been left running, when nothing here ever halts a campaign: it withdraws one lead from the ones still live.
       //"still matching" because HeyReach finds the person behind a blacklist entry in the background.
-      const companyDetail = targets.companyName ? `company "${targets.companyName}" blacklisted` : "no company to blacklist"; //company part of the log
       return { //done, with every part
         status: "suppressed", //lead was stopped
-        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted (still matching); ${companyDetail}`, //for the log
+        detail: `lead is in ${inCampaigns} campaign(s), removed from ${removedFrom}; lead blacklisted (still matching)`, //for the log
       };
     },
   },

@@ -229,7 +229,7 @@ function parseCampaign(value: unknown): HeyReachCampaign {
 //Uses: heyreachHeaders, credentialHint (lib/endpoints.ts); rateLimitWaitMs (lib/http.ts); responseJson
 //(lib/json.ts).
 //Workflow: every HeyReach request - fetchHeyReachConversationWindow, stopLeadInActiveCampaigns,
-//addToHeyReachBlacklist.
+//blacklistHeyReachLead.
 //
 //WHY IT EXISTS AT ALL. There were three raw fetch sites here - conversations, GetCampaignsForLead and
 //StopLeadInCampaign - each with its own copy of the status check. A 429 was an ordinary Error at all three,
@@ -459,12 +459,15 @@ export async function stopLeadInActiveCampaigns(
 //Adds a lead to the workspace blacklist, so no HeyReach campaign can contact them again.
 //Input: profileUrl - the lead's LinkedIn profile URL, or null; email - the lead's email, or null.
 //Output: nothing. Throws if the blacklist is full, HeyReach rejects the lead, or the request fails.
-//Uses: addToHeyReachBlacklist (this file).
+//Uses: heyreachFetch (this file); errorMessage, isJsonObject, arrayValue (lib/json.ts).
 //Workflow: interested workflow (recordInterestedLead) step 6 - the "heyreach campaigns + blacklist" channel
 //(lib/providers.ts) of suppressInterestedLead (lib/interested.ts).
 //
 //Covers the email-only lead that stopLeadInActiveCampaigns cannot stop. An email may spend one HeyReach
 //reverse-lookup credit; a profile URL never does.
+//[LOGIC] HeyReach refuses in two different ways. A full blacklist arrives as a 400, which heyreachFetch throws
+//with HeyReach's own text inside it. A rejected entry arrives as a 200 with the reason in validationErrors -
+//the status alone says nothing.
 //[LOGIC] HeyReach matches the entry to a person in the background, so whether the lead was found is not known
 //here. A lead it never finds shows as "NotFound" on /blacklist/GetLeads later.
 //---------------------------------------------------------------------------------------------------------
@@ -473,47 +476,21 @@ export async function blacklistHeyReachLead(profileUrl: string | null, email: st
   const lead: Record<string, string> = {}; //only the identifiers we have
   if (profileUrl) lead.profileUrl = profileUrl; //add the url, if known
   if (email) lead.email = email; //add the email, if known
-  await addToHeyReachBlacklist("/blacklist/AddLeads", { leads: [lead] }, "lead"); //send it
-}
 
-//---------------------------------------------------------------------------------------------------------
-//Adds a company to the workspace blacklist, so no HeyReach campaign contacts anyone working there.
-//Input: companyName - the company's name as Attio holds it.
-//Output: nothing. Throws if the blacklist is full, HeyReach rejects the company, or the request fails.
-//Uses: addToHeyReachBlacklist (this file).
-//Workflow: same channel as blacklistHeyReachLead.
-//
-//By name only, because Attio gives us no LinkedIn company URL. HeyReach matches it by exact, case-insensitive
-//company name, so a company spelled differently on LinkedIn is not caught.
-//---------------------------------------------------------------------------------------------------------
-export async function blacklistHeyReachCompany(companyName: string): Promise<void> {
-  await addToHeyReachBlacklist("/blacklist/AddCompanies", { companies: [{ name: companyName }] }, "company"); //send it
-}
-
-//---------------------------------------------------------------------------------------------------------
-//Sends one blacklist entry and turns HeyReach's two ways of refusing it into a clear error.
-//Input: path - AddLeads or AddCompanies; body - the request body; kind - "lead" or "company", for messages.
-//Output: nothing. Throws if the blacklist is full, the entry was rejected, or the request fails.
-//Uses: heyreachFetch (this file); errorMessage, isJsonObject, arrayValue (lib/json.ts).
-//
-//[LOGIC] A full blacklist arrives as a 400, which heyreachFetch throws with HeyReach's own text inside it.
-//A rejected entry arrives as a 200 with the reason in validationErrors - the status alone says nothing.
-//---------------------------------------------------------------------------------------------------------
-async function addToHeyReachBlacklist(path: string, body: unknown, kind: "lead" | "company"): Promise<void> {
   let response: unknown; //heyreach's reply
   try {
-    response = await heyreachFetch(path, body); //send the entry
+    response = await heyreachFetch("/blacklist/AddLeads", { leads: [lead] }); //send the entry
   } catch (error) {
     const message = errorMessage(error); //the error text
     if (message.includes("blacklist is full")) { //workspace limit reached
-      throw new Error(`HeyReach ${kind} blacklist is full, ${kind} not added: ${message}`); //say so plainly
+      throw new Error(`HeyReach lead blacklist is full, lead not added: ${message}`); //say so plainly
     }
     throw error; //any other failure, pass it on
   }
-  if (!isJsonObject(response)) {throw new Error(`HeyReach ${kind} blacklist response is invalid`);}
+  if (!isJsonObject(response)) {throw new Error("HeyReach lead blacklist response is invalid");}
   const rejected = arrayValue(response, "validationErrors"); //entries heyreach skipped
   if (rejected.length > 0) { //the entry did not land
-    throw new Error(`HeyReach rejected the ${kind} for its blacklist: ${rejected.join("; ")}`); //say why
+    throw new Error(`HeyReach rejected the lead for its blacklist: ${rejected.join("; ")}`); //say why
   }
 }
 //#endregion
